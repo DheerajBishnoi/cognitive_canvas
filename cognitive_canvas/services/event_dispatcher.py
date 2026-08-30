@@ -26,7 +26,7 @@ MAX_BACKOFF = 60
 def get_pending_events(limit: int = 10) -> list[dict]:
     docs = (
         db.collection("events")
-        .where("processed", "==", False)
+        .where("status", "==", "PENDING")
         .limit(limit)
         .stream()
     )
@@ -40,11 +40,24 @@ def get_pending_events(limit: int = 10) -> list[dict]:
     ]
 
 
-def mark_event_processed(event_id: str):
+def mark_event_completed(event_id: str):
     db.collection("events").document(event_id).update({
-        "processed": True
+        "status": "COMPLETED",
+        "processed": True,
     })
 
+def mark_event_processing(event_id: str):
+    db.collection("events").document(event_id).update({
+        "status": "PROCESSING",
+    })
+
+
+def mark_event_failed(event_id: str, error: Exception):
+    db.collection("events").document(event_id).update({
+        "status": "FAILED",
+        "processed": False,
+        "error": str(error),
+    })
 
 def is_rate_limit_error(error: Exception) -> bool:
     """
@@ -82,7 +95,7 @@ Process this event.
 Route the task to the appropriate specialist agent.
 Do not invent information that is not present in the event.
 """
-
+    mark_event_processing(event["id"])
     print(f"\nProcessing event: {event['id']}")
 
     async for response in runner.run_async(
@@ -97,9 +110,10 @@ Do not invent information that is not present in the event.
             for part in response.content.parts:
                 if part.text:
                     print(part.text)
-
-    mark_event_processed(event["id"])
-    print(f"Event processed: {event['id']}")
+    
+    raise Exception("TEST FAILURE")
+    mark_event_completed(event["id"])
+    print(f"\nEvent processed: {event['id']}")
 
 
 async def process_pending_events():
@@ -113,6 +127,9 @@ async def process_pending_events():
 
         except Exception as e:
             print(f"Failed to process {event['id']}: {e}")
+
+            if not is_rate_limit_error(e):
+                mark_event_failed(event["id"], e)
 
             if is_rate_limit_error(e):
                 print(

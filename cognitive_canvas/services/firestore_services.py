@@ -9,6 +9,7 @@ def save_event(event: dict) -> str:
 
     db.collection("events").document(event_id).set({
         **event,
+        "status": "PENDING",
         "processed": False,
     })
 
@@ -110,47 +111,117 @@ def create_task(
 
 def save_extraction(extraction: dict) -> str:
     """
-    Saves an extracted project and its tasks to Firestore.
+    Persist an extraction according to its intent.
+
+    task     -> create tasks + TASK_CREATED events
+    plan     -> create project + PLAN_REQUESTED event
+    research -> create RESEARCH_REQUESTED event
     """
 
-    # Create project
-    project_ref = db.collection("projects").document()
+    intent = extraction.get("intent", "task")
 
-    project_ref.set({
-        "title": extraction.get("project_title"),
-        "summary": extraction.get("summary", ""),
-        "deadline": extraction.get("project_deadline"),
-        "status": "active",
-    })
+    # ---------------------------------------------------------
+    # TASK
+    # ---------------------------------------------------------
+    if intent == "task":
 
-    project_id = project_ref.id
+        project_ref = db.collection("projects").document()
 
-    # Create tasks
-    for task in extraction.get("tasks", []):
-        task_ref = db.collection("tasks").document()
-
-        task_ref.set({
-            "project_id": project_id,
-            "title": task["title"],
-            "task_type": task["task_type"],
-            "priority": task["priority"],
-            "due_date": task.get("due_date"),
-            "details": task.get("details", ""),
-            "status": "queued",
+        project_ref.set({
+            "title": extraction.get("project_title"),
+            "summary": extraction.get("summary", ""),
+            "deadline": extraction.get("project_deadline"),
+            "status": "active",
         })
+
+        project_id = project_ref.id
+
+        for task in extraction.get("tasks", []):
+            task_ref = db.collection("tasks").document()
+
+            task_ref.set({
+                "project_id": project_id,
+                "title": task["title"],
+                "task_type": task["task_type"],
+                "priority": task["priority"],
+                "due_date": task.get("due_date"),
+                "details": task.get("details", ""),
+                "status": "queued",
+            })
+
+            event = create_event(
+                "TASK_CREATED",
+                task_ref.id,
+                {
+                    "project_id": project_id,
+                    "task_title": task["title"],
+                    "task_type": task["task_type"],
+                },
+            )
+
+            save_event(event)
+
+            print("EVENT SAVED:", event)
+
+        return (
+            f"Saved project {project_id} with "
+            f"{len(extraction.get('tasks', []))} tasks."
+        )
+
+    # ---------------------------------------------------------
+    # PLAN
+    # ---------------------------------------------------------
+    if intent == "plan":
+
+        project_ref = db.collection("projects").document()
+
+        project_ref.set({
+            "title": extraction.get("project_title"),
+            "summary": extraction.get("summary", ""),
+            "deadline": extraction.get("project_deadline"),
+            "status": "active",
+        })
+
+        project_id = project_ref.id
+
         event = create_event(
-            "TASK_CREATED",
-            task_ref.id,
+            "PLAN_REQUESTED",
+            project_id,
             {
                 "project_id": project_id,
-                "task_title": task["title"],
-                "task_type": task["task_type"],
+                "goal": extraction.get("summary", ""),
+                "deadline": extraction.get("project_deadline"),
             },
         )
+
         save_event(event)
 
         print("EVENT SAVED:", event)
 
+        return f"Created project {project_id} and requested a plan."
 
+    # ---------------------------------------------------------
+    # RESEARCH
+    # ---------------------------------------------------------
+    if intent == "research":
 
-    return f"Saved project {project_id} with {len(extraction.get('tasks', []))} tasks."
+        event = create_event(
+            "RESEARCH_REQUESTED",
+            extraction.get("project_title") or "research",
+            {
+                "summary": extraction.get("summary", ""),
+                "project_title": extraction.get("project_title"),
+                "project_deadline": extraction.get("project_deadline"),
+            },
+        )
+
+        save_event(event)
+
+        print("EVENT SAVED:", event)
+
+        return "Research request saved as an event."
+
+    # ---------------------------------------------------------
+    # UNKNOWN INTENT
+    # ---------------------------------------------------------
+    raise ValueError(f"Unsupported extraction intent: {intent}")

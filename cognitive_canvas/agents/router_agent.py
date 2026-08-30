@@ -6,7 +6,7 @@ from .planner_agent import planner_agent
 
 router_agent = LlmAgent(
     name="router_agent",
-    model="gemini-3.1-flash-lite",
+    model="gemini-3.5-flash",
 
     description="Routes tasks to the appropriate specialist agent.",
 

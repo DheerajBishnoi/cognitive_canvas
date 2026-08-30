@@ -12,12 +12,12 @@ from ..services.firestore_services import (
     start_task,
     complete_task,
     get_next_task,
-    schedule_task,
+    schedule_tasks,
 )
 
 planner_agent = LlmAgent(
     name="planner_agent",
-    model="gemini-3.1-flash-lite",
+    model="gemini-3.5-flash",
 
     description="Turns goals and tasks into actionable plans and schedules.",
 
@@ -94,6 +94,6 @@ Always keep the workspace consistent.
         FunctionTool(start_task),
         FunctionTool(complete_task),
         FunctionTool(get_next_task),
-        FunctionTool(schedule_task),
+        FunctionTool(schedule_tasks),
     ],
 )

@@ -4,7 +4,7 @@ from google.adk.tools import google_search
 
 research_agent = LlmAgent(
     name="research_agent",
-    model="gemini-3.5-flash-lite",
+    model="gemini-3.5-flash",
 
     description="Researches topics and provides grounded, useful findings.",
 
@@ -40,7 +40,7 @@ state that external verification was unavailable.
 
 research_fallback_agent = LlmAgent(
     name="research_fallback_agent",
-    model="gemini-3.1-flash-lite",
+    model="gemini-3.5-flash",
 
     description="Provides research analysis when external search is unavailable.",
 

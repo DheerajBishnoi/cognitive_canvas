@@ -41,7 +41,7 @@ def save_to_firestore(callback_context):
 
 root_agent = LlmAgent(
     name="root_agent",
-    model="gemini-3.1-flash-lite",
+    model="gemini-3.5-flash",
 
     description="Extracts structured work from messy user input.",
 

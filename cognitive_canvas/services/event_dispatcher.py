@@ -132,16 +132,15 @@ def is_rate_limit_error(error: Exception) -> bool:
     )
 
 
-async def process_event(event: dict):
-    runner = InMemoryRunner(
-        agent=router_agent,
-        app_name=APP_NAME,
-    )
+MODEL_CASCADE = [
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+]
 
-    session = await runner.session_service.create_session(
-        app_name=APP_NAME,
-        user_id=USER_ID,
-    )
+async def process_event(event: dict):
+    mark_event_processing(event["id"])
+    print(f"\nProcessing event: {event['id']}")
 
     prompt = f"""
 A new Cognitive Canvas event has arrived.
@@ -154,25 +153,51 @@ Process this event.
 Route the task to the appropriate specialist agent.
 Do not invent information that is not present in the event.
 """
-    mark_event_processing(event["id"])
-    print(f"\nProcessing event: {event['id']}")
 
-    async for response in runner.run_async(
-        user_id=USER_ID,
-        session_id=session.id,
-        new_message=types.Content(
-            role="user",
-            parts=[types.Part(text=prompt)],
-        ),
-    ):
-        if response.content and response.content.parts:
-            for part in response.content.parts:
-                if part.text:
-                    print(part.text)
-    
-    # raise Exception("TEST FAILURE")
-    mark_event_completed(event["id"])
-    print(f"\nEvent processed: {event['id']}")
+    last_error = None
+    for idx, model_name in enumerate(MODEL_CASCADE):
+        try:
+            if idx > 0:
+                print(f"⚠️ [Dispatcher Fallback] Retrying event {event['id']} with model: {model_name}")
+            
+            router_agent.model = model_name
+            runner = InMemoryRunner(
+                agent=router_agent,
+                app_name=APP_NAME,
+            )
+
+            session = await runner.session_service.create_session(
+                app_name=APP_NAME,
+                user_id=USER_ID,
+            )
+
+            async for response in runner.run_async(
+                user_id=USER_ID,
+                session_id=session.id,
+                new_message=types.Content(
+                    role="user",
+                    parts=[types.Part(text=prompt)],
+                ),
+            ):
+                if response.content and response.content.parts:
+                    for part in response.content.parts:
+                        if part.text:
+                            print(part.text)
+
+            mark_event_completed(event["id"])
+            print(f"\nEvent processed successfully with {model_name}: {event['id']}")
+            return
+
+        except Exception as e:
+            last_error = e
+            print(f"❌ Dispatcher error on {model_name} for event {event['id']}: {e}")
+            if is_rate_limit_error(e):
+                continue
+            else:
+                raise e
+
+    if last_error:
+        raise last_error
 
 async def process_research_fallback(event: dict):
     runner = InMemoryRunner(

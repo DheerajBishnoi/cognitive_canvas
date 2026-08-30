@@ -104,3 +104,21 @@ Put useful context in details.
 
     after_agent_callback=save_to_firestore,
 )
+
+MODEL_CASCADE = [
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+]
+
+def get_extraction_agent(model_name: str = "gemini-3.5-flash") -> LlmAgent:
+    """Returns an extraction agent configured with the specified model."""
+    return LlmAgent(
+        name="root_agent",
+        model=model_name,
+        description=root_agent.description,
+        instruction=root_agent.instruction,
+        output_schema=ExtractionResult,
+        output_key="extraction_result",
+        after_agent_callback=save_to_firestore,
+    )

@@ -4,14 +4,22 @@ import { twMerge } from 'tailwind-merge';
 import {
   LayoutDashboard, CalendarDays, ArrowRight, X, Send,
   ChevronLeft, Clock, CheckCircle2, Circle, Sparkles,
-  MessageSquare, Loader2, RefreshCw,
+  MessageSquare, Loader2, RefreshCw, AlertTriangle, ShieldCheck,
 } from 'lucide-react';
 import {
-  createSession, sendMessage, extractAgentText,
+  sendChatMessage,
   fetchProjects, fetchProjectDetail, fetchSchedule, toggleTask
 } from './api.js';
 
 function cn(...inputs) { return twMerge(clsx(inputs)); }
+
+function formatModelName(name) {
+  if (!name) return 'Gemini 3.5 Flash';
+  if (name.includes('3.5')) return 'Gemini 3.5 Flash';
+  if (name.includes('3.1')) return 'Gemini 3.1 Flash Lite';
+  if (name.includes('2.5')) return 'Gemini 2.5 Flash';
+  return name;
+}
 
 // ─── App Component ───────────────────────────────────────────────
 export default function App() {
@@ -24,18 +32,20 @@ export default function App() {
   const [scheduleTasks, setScheduleTasks] = useState([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
 
-  // Agent Chat State
-  const [sessionId, setSessionId] = useState(null);
+  // Agent Chat State with Fallback Support
+  const [currentModel, setCurrentModel] = useState('gemini-3.5-flash');
+  const [isFallbackActive, setIsFallbackActive] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [bottomInput, setBottomInput] = useState('');
   const [isAgentThinking, setIsAgentThinking] = useState(false);
+  const [fallbackNotice, setFallbackNotice] = useState(null);
   const chatEndRef = useRef(null);
 
   // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages, isAgentThinking]);
+  }, [chatMessages, isAgentThinking, fallbackNotice]);
 
   // Load Firestore Data
   const loadData = useCallback(async () => {
@@ -54,38 +64,80 @@ export default function App() {
     }
   }, []);
 
-  // Initialize ADK session & fetch data on mount
   useEffect(() => {
-    createSession()
-      .then((s) => {
-        setSessionId(s.id);
-        console.log('ADK Session:', s.id);
-      })
-      .catch((e) => console.error('Session error:', e));
-
     loadData();
   }, [loadData]);
 
-  // Send message to Agent
+  // Send message to Agent with automatic Quota Fallback
   const sendToAgent = async (text) => {
-    if (!text.trim() || !sessionId) return;
-    setChatMessages((p) => [...p, { role: 'user', text }]);
+    if (!text.trim()) return;
+
+    // Append user message
+    setChatMessages((prev) => [...prev, { role: 'user', text }]);
     setIsAgentThinking(true);
+    setFallbackNotice(null);
+
+    let incomingResponse = '';
+    let responseModel = currentModel;
+    let fallbackOccurred = false;
 
     try {
-      const events = [];
-      await sendMessage(sessionId, text, (ev) => events.push(ev));
-      const reply = extractAgentText(events);
-      if (reply) {
-        setChatMessages((p) => [...p, { role: 'assistant', text: reply }]);
+      await sendChatMessage(text, (event) => {
+        if (event.type === 'fallback_warning') {
+          // Model quota exhausted! Fallback triggered
+          fallbackOccurred = true;
+          setIsFallbackActive(true);
+          setCurrentModel(event.fallback_model);
+          setFallbackNotice({
+            failedModel: formatModelName(event.failed_model),
+            fallbackModel: formatModelName(event.fallback_model),
+            message: event.message || `Quota limit reached on ${formatModelName(event.failed_model)}. Switched to ${formatModelName(event.fallback_model)}.`,
+          });
+        } else if (event.type === 'text') {
+          incomingResponse += event.text;
+          if (event.model) {
+            responseModel = event.model;
+            setCurrentModel(event.model);
+          }
+          if (event.is_fallback) {
+            setIsFallbackActive(true);
+          }
+        } else if (event.type === 'done') {
+          if (event.model) {
+            responseModel = event.model;
+            setCurrentModel(event.model);
+          }
+          if (event.is_fallback) {
+            setIsFallbackActive(true);
+          }
+        } else if (event.type === 'error') {
+          throw new Error(event.message);
+        }
+      });
+
+      if (incomingResponse) {
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            text: incomingResponse,
+            model: formatModelName(responseModel),
+            isFallback: fallbackOccurred,
+          },
+        ]);
       }
-      // Refresh Firestore data after agent responds to show newly created tasks/projects
+
+      // Refresh Firestore data after planning completes
       setTimeout(loadData, 1500);
     } catch (err) {
-      console.error('Agent error:', err);
-      setChatMessages((p) => [
-        ...p,
-        { role: 'assistant', text: '⚠️ Something went wrong contacting the agent. Please check the backend server.' },
+      console.error('Agent chat error:', err);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: `⚠️ Request failed: ${err.message || 'Check server connection.'}`,
+          isError: true,
+        },
       ]);
     } finally {
       setIsAgentThinking(false);
@@ -110,11 +162,9 @@ export default function App() {
   const handleToggleTask = async (taskId, currentDone) => {
     try {
       await toggleTask(taskId, !currentDone);
-      // Optimistically update schedule list
       setScheduleTasks((prev) =>
         prev.map((t) => (t.id === taskId ? { ...t, done: !currentDone } : t))
       );
-      // Reload full data
       loadData();
     } catch (err) {
       console.error('Failed to toggle task:', err);
@@ -189,6 +239,9 @@ export default function App() {
             >
               <MessageSquare size={16} />
               <span className="hidden sm:inline">Agent Chat</span>
+              {isFallbackActive && (
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" title="Fallback model active" />
+              )}
             </button>
 
             <div className="w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center text-sm font-medium">
@@ -211,7 +264,7 @@ export default function App() {
                 value={bottomInput}
                 onChange={(e) => setBottomInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleBottomSend()}
-                placeholder="What's on the agenda today? (Ask agent to plan, study, research...)"
+                placeholder="What's on the agenda today? (e.g. Plan a 2-week Linux study schedule...)"
                 className="flex-1 py-3 text-base outline-none bg-transparent placeholder:text-textTertiary"
               />
               <button
@@ -229,29 +282,67 @@ export default function App() {
       <aside
         className={cn(
           "h-full bg-white border-l border-borderLight flex flex-col transition-all duration-300 ease-in-out overflow-hidden shadow-sidebar",
-          sidebarOpen ? "w-[400px] min-w-[400px]" : "w-0 min-w-0 border-l-0 shadow-none"
+          sidebarOpen ? "w-[420px] min-w-[420px]" : "w-0 min-w-0 border-l-0 shadow-none"
         )}
       >
+        {/* Sidebar Header with Dynamic Model Badge */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-borderLight flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <Sparkles size={18} className="text-accent" />
-            <span className="font-semibold text-base text-textPrimary">Gemini 3.5 Flash</span>
+          <div className="flex items-center gap-2 min-w-0">
+            <Sparkles size={18} className="text-accent flex-shrink-0" />
+            <div className="flex flex-col min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-sm text-textPrimary truncate">
+                  {formatModelName(currentModel)}
+                </span>
+                {isFallbackActive ? (
+                  <span className="text-[10px] font-semibold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1 flex-shrink-0">
+                    <AlertTriangle size={10} /> Fallback
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1 flex-shrink-0">
+                    <ShieldCheck size={10} /> Primary
+                  </span>
+                )}
+              </div>
+              <span className="text-[11px] text-textTertiary">
+                Auto-fallback: 3.5 → 3.1 → 2.5
+              </span>
+            </div>
           </div>
+
           <button
             onClick={() => setSidebarOpen(false)}
-            className="p-1.5 rounded-full hover:bg-gray-100 text-textSecondary transition-colors"
+            className="p-1.5 rounded-full hover:bg-gray-100 text-textSecondary transition-colors flex-shrink-0"
           >
             <X size={18} />
           </button>
         </div>
 
+        {/* Quota Fallback Alert Banner */}
+        {fallbackNotice && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-start gap-2.5 text-xs text-amber-900 animate-fadeIn">
+            <AlertTriangle size={15} className="text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span className="font-semibold">Quota Exhausted on {fallbackNotice.failedModel}: </span>
+              <span>Switched to <span className="font-semibold text-amber-950">{fallbackNotice.fallbackModel}</span> automatically.</span>
+            </div>
+            <button
+              onClick={() => setFallbackNotice(null)}
+              className="text-amber-700 hover:text-amber-900"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )}
+
+        {/* Chat Messages */}
         <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
           {chatMessages.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center text-center text-textTertiary py-12">
               <Sparkles size={32} className="mb-3 text-accent opacity-50" />
               <p className="text-sm font-medium text-textPrimary mb-1">Cognitive Canvas Agent</p>
-              <p className="text-xs text-textSecondary max-w-xs">
-                Tell me a project, exam, or goal you want to plan. I'll structure it into actionable tasks!
+              <p className="text-xs text-textSecondary max-w-xs leading-relaxed">
+                Describe any goal, study topic, or exam. If high-tier models exhaust quota, it automatically cascades to lower models.
               </p>
             </div>
           )}
@@ -264,10 +355,18 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <div key={i} className="self-start max-w-[90%]">
+              <div key={i} className="self-start max-w-[92%] flex flex-col gap-1">
                 <div className="bg-surface border border-borderLight px-4 py-3 rounded-2xl rounded-bl-md text-sm leading-relaxed text-textPrimary whitespace-pre-line shadow-sm">
                   {msg.text}
                 </div>
+                {msg.model && (
+                  <div className="flex items-center gap-1 text-[11px] text-textTertiary px-1">
+                    <span>Generated by {msg.model}</span>
+                    {msg.isFallback && (
+                      <span className="text-amber-700 font-medium">(via quota fallback)</span>
+                    )}
+                  </div>
+                )}
               </div>
             )
           )}
@@ -283,6 +382,7 @@ export default function App() {
           <div ref={chatEndRef} />
         </div>
 
+        {/* Chat Input */}
         <div className="p-4 border-t border-borderLight flex-shrink-0">
           <div className="flex items-center bg-surface rounded-full px-4 py-1 border border-borderLight focus-within:border-borderFocus transition-colors">
             <input
@@ -290,7 +390,7 @@ export default function App() {
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleChatSend()}
-              placeholder="Reply to Gemini..."
+              placeholder="Reply to Agent..."
               className="flex-1 py-2.5 text-sm bg-transparent outline-none placeholder:text-textTertiary"
             />
             <button

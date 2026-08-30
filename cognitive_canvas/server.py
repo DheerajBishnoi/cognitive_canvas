@@ -1,9 +1,12 @@
 import os
 import sys
+import json
+import asyncio
 from pathlib import Path
 from typing import Optional, Any
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # Add project root to sys.path
@@ -12,7 +15,10 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.runners import InMemoryRunner
+from google.genai import types
 from cognitive_canvas.services.firestore_services import db
+from cognitive_canvas.agent import MODEL_CASCADE, get_extraction_agent
 
 agents_dir = str(Path(__file__).resolve().parent)
 
@@ -22,6 +28,121 @@ app: FastAPI = get_fast_api_app(
     allow_origins=["*"],
     web=False,
 )
+
+def is_quota_error(error: Exception) -> bool:
+    """Detect 429, Resource Exhausted, and Quota errors."""
+    error_text = str(error).upper()
+    return (
+        "429" in error_text
+        or "RESOURCE_EXHAUSTED" in error_text
+        or "QUOTA" in error_text
+        or "RATE LIMIT" in error_text
+        or "RATE_LIMIT" in error_text
+    )
+
+# ─── Model Info & Fallback Chat API ──────────────────────────────
+
+class ChatRequest(BaseModel):
+    message: str
+    user_id: Optional[str] = "web_user"
+    session_id: Optional[str] = None
+
+
+@app.get("/api/model-info")
+async def get_model_info():
+    """Returns the primary model and fallback cascade order."""
+    return {
+        "primary_model": MODEL_CASCADE[0],
+        "fallback_cascade": MODEL_CASCADE,
+    }
+
+
+@app.post("/api/chat")
+async def chat_with_fallback(req: ChatRequest):
+    """
+    Executes the extraction agent with automatic fallback on quota exhaustion.
+    Streams SSE events for real-time tokens, fallback notices, and final output.
+    """
+    async def event_generator():
+        last_error = None
+        
+        for idx, model_name in enumerate(MODEL_CASCADE):
+            try:
+                # If this is a fallback attempt, emit a fallback warning event first
+                if idx > 0:
+                    prev_model = MODEL_CASCADE[idx - 1]
+                    fallback_warning = {
+                        "type": "fallback_warning",
+                        "failed_model": prev_model,
+                        "fallback_model": model_name,
+                        "message": f"⚠️ {prev_model} quota limit reached. Automatically falling back to {model_name}...",
+                    }
+                    yield f"data: {json.dumps(fallback_warning)}\n\n"
+                    print(f"⚠️ [Fallback] Switching from {prev_model} to {model_name} due to quota exhaustion.")
+                
+                # Create extraction agent configured for this model
+                agent = get_extraction_agent(model_name)
+                runner = InMemoryRunner(agent=agent, app_name="cognitive_canvas")
+                session = await runner.session_service.create_session(
+                    app_name="cognitive_canvas",
+                    user_id=req.user_id or "web_user",
+                )
+                
+                # Stream the agent response
+                async for response in runner.run_async(
+                    user_id=req.user_id or "web_user",
+                    session_id=session.id,
+                    new_message=types.Content(
+                        role="user",
+                        parts=[types.Part(text=req.message)],
+                    ),
+                ):
+                    if response.content and response.content.parts:
+                        for part in response.content.parts:
+                            if part.text:
+                                chunk = {
+                                    "type": "text",
+                                    "text": part.text,
+                                    "model": model_name,
+                                    "is_fallback": idx > 0,
+                                }
+                                yield f"data: {json.dumps(chunk)}\n\n"
+                
+                # Successfully completed
+                done_event = {
+                    "type": "done",
+                    "model": model_name,
+                    "is_fallback": idx > 0,
+                }
+                yield f"data: {json.dumps(done_event)}\n\n"
+                return
+
+            except Exception as e:
+                last_error = e
+                print(f"❌ Error with model {model_name}: {e}")
+                
+                if is_quota_error(e):
+                    # Quota error: continue to next fallback model
+                    continue
+                else:
+                    # Other error: notify client and exit
+                    error_event = {
+                        "type": "error",
+                        "message": str(e),
+                        "model": model_name,
+                    }
+                    yield f"data: {json.dumps(error_event)}\n\n"
+                    return
+        
+        # If all models in the cascade failed due to quota
+        final_error = {
+            "type": "error",
+            "message": f"All models in fallback cascade exhausted quota. Last error: {last_error}",
+        }
+        yield f"data: {json.dumps(final_error)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 # ─── Firestore Custom REST API Endpoints ─────────────────────────
 
@@ -171,5 +292,5 @@ async def update_task_status(task_id: str, body: TaskUpdate):
 
 
 if __name__ == "__main__":
-    print("🚀 Starting Cognitive Canvas Unified Server on http://127.0.0.1:8000")
+    print("🚀 Starting Cognitive Canvas Unified Server with Model Fallback on http://127.0.0.1:8000")
     uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)

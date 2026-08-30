@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 from typing import Optional, Any
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -40,7 +40,9 @@ def is_quota_error(error: Exception) -> bool:
         or "RATE_LIMIT" in error_text
     )
 
-# ─── Model Info & Fallback Chat API ──────────────────────────────
+# ─── API Router (Mounted at both / and /api) ────────────────────
+
+api_router = APIRouter()
 
 class ChatRequest(BaseModel):
     message: str
@@ -48,7 +50,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
 
 
-@app.get("/api/model-info")
+@api_router.get("/model-info")
 async def get_model_info():
     """Returns the primary model and fallback cascade order."""
     return {
@@ -57,7 +59,7 @@ async def get_model_info():
     }
 
 
-@app.post("/api/chat")
+@api_router.post("/chat")
 async def chat_with_fallback(req: ChatRequest):
     """
     Executes the extraction agent with automatic fallback on quota exhaustion.
@@ -144,9 +146,7 @@ async def chat_with_fallback(req: ChatRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-# ─── Firestore Custom REST API Endpoints ─────────────────────────
-
-@app.get("/api/projects")
+@api_router.get("/projects")
 async def get_projects():
     """Fetch all projects from Firestore with task completion stats."""
     try:
@@ -182,7 +182,7 @@ async def get_projects():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/projects/{project_id}")
+@api_router.get("/projects/{project_id}")
 async def get_project_detail(project_id: str):
     """Fetch a single project with its notes and tasks."""
     try:
@@ -232,7 +232,7 @@ async def get_project_detail(project_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/schedule")
+@api_router.get("/schedule")
 async def get_schedule():
     """Fetch all tasks and build the daily schedule."""
     try:
@@ -266,7 +266,7 @@ class TaskUpdate(BaseModel):
     status: Optional[str] = None
 
 
-@app.patch("/api/tasks/{task_id}")
+@api_router.patch("/tasks/{task_id}")
 async def update_task_status(task_id: str, body: TaskUpdate):
     """Toggle or update a task status in Firestore."""
     try:
@@ -289,6 +289,11 @@ async def update_task_status(task_id: str, body: TaskUpdate):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Mount router for both unprefixed (e.g. /chat) and /api (e.g. /api/chat)
+app.include_router(api_router)
+app.include_router(api_router, prefix="/api")
 
 
 if __name__ == "__main__":

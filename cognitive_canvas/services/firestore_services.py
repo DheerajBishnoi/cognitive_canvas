@@ -64,6 +64,50 @@ def update_task(task_id: str, updates: dict) -> str:
 
     return f"Task {task_id} updated successfully."
 
+def create_task(
+    project_id: str,
+    title: str,
+    task_type: str,
+    priority: str = "medium",
+    due_date: str | None = None,
+    details: str = "",
+    create_event_for_task: bool = False,
+) -> str:
+    """
+    Create a task in Firestore.
+
+    By default, task creation does not emit a TASK_CREATED event.
+    This prevents agent-created subtasks from recursively triggering
+    the event dispatcher.
+    """
+
+    task_ref = db.collection("tasks").document()
+
+    task_ref.set({
+        "project_id": project_id,
+        "title": title,
+        "task_type": task_type,
+        "priority": priority,
+        "due_date": due_date,
+        "details": details,
+        "status": "queued",
+    })
+
+    if create_event_for_task:
+        event = create_event(
+            "TASK_CREATED",
+            task_ref.id,
+            {
+                "project_id": project_id,
+                "task_title": title,
+                "task_type": task_type,
+            },
+        )
+
+        save_event(event)
+
+    return task_ref.id
+
 def save_extraction(extraction: dict) -> str:
     """
     Saves an extracted project and its tasks to Firestore.

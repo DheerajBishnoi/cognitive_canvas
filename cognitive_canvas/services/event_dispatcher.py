@@ -1,5 +1,12 @@
 import asyncio
+import sys
 from pathlib import Path
+
+# Add project root to sys.path if running directly as a script
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from google.cloud import firestore
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
@@ -10,9 +17,14 @@ load_dotenv(env_path)
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
-from .firestore_services import db, save_research_result
-from ..agents.router_agent import router_agent
-from ..agents.research_agent import research_fallback_agent
+try:
+    from .firestore_services import db, save_research_result
+    from ..agents.router_agent import router_agent
+    from ..agents.research_agent import research_fallback_agent
+except (ImportError, ValueError):
+    from cognitive_canvas.services.firestore_services import db, save_research_result
+    from cognitive_canvas.agents.router_agent import router_agent
+    from cognitive_canvas.agents.research_agent import research_fallback_agent
 
 
 APP_NAME = "cognitive_canvas_router"

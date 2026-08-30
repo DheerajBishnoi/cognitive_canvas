@@ -10,8 +10,9 @@ load_dotenv(env_path)
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
-from .firestore_services import db
+from .firestore_services import db, save_research_result
 from ..agents.router_agent import router_agent
+from ..agents.research_agent import research_fallback_agent
 
 
 APP_NAME = "cognitive_canvas_router"
@@ -157,10 +158,66 @@ Do not invent information that is not present in the event.
                 if part.text:
                     print(part.text)
     
-    raise Exception("TEST FAILURE")
+    # raise Exception("TEST FAILURE")
     mark_event_completed(event["id"])
     print(f"\nEvent processed: {event['id']}")
 
+async def process_research_fallback(event: dict):
+    runner = InMemoryRunner(
+        agent=research_fallback_agent,
+        app_name=APP_NAME,
+    )
+
+    session = await runner.session_service.create_session(
+        app_name=APP_NAME,
+        user_id=USER_ID,
+    )
+
+    prompt = f"""
+A research request could not be completed because the
+primary research agent encountered a Gemini quota/rate-limit error.
+
+Event:
+{event}
+
+Provide the best useful analysis possible using your existing knowledge.
+Do not claim to have performed web research.
+Clearly state when current external verification is unavailable.
+"""
+
+    print(f"\n⚠️ Running research fallback for event: {event['id']}")
+
+    output_parts = []
+
+    async for response in runner.run_async(
+        user_id=USER_ID,
+        session_id=session.id,
+        new_message=types.Content(
+            role="user",
+            parts=[types.Part(text=prompt)],
+        ),
+    ):
+        if response.content and response.content.parts:
+            for part in response.content.parts:
+                if part.text:
+                    print(part.text)
+                    output_parts.append(part.text)
+
+    findings = "\n".join(output_parts)
+
+    payload = event.get("payload", {})
+
+    save_research_result(
+        event_id=event["id"],
+        project_id=payload.get("project_id"),
+        query=payload.get("query", ""),
+        summary=findings,
+        source_type="fallback",
+    )
+
+    mark_event_completed(event["id"])
+
+    print(f"\nFallback completed: {event['id']}")
 
 async def process_pending_events():
     events = get_pending_events()
@@ -178,12 +235,25 @@ async def process_pending_events():
                 mark_event_failed(event["id"], e)
 
             if is_rate_limit_error(e):
+                if event.get("type") == "RESEARCH_REQUESTED":
+                    try:
+                        await process_research_fallback(event)
+                        continue
+
+                    except Exception as fallback_error:
+                        print(
+                            f"Research fallback also failed: {fallback_error}"
+                        )
+
+                        mark_event_failed(event["id"], fallback_error)
+
+                        raise RuntimeError("GEMINI_RATE_LIMIT") from fallback_error
+
                 print(
                     "⚠️ Gemini quota/rate limit detected. "
                     "Stopping this processing batch."
                 )
 
-                # Tell caller that a rate limit occurred
                 raise RuntimeError("GEMINI_RATE_LIMIT") from e
 
 

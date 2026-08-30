@@ -17,6 +17,28 @@ def save_event(event: dict) -> str:
 
     return event_id
 
+def save_research_result(
+    event_id: str,
+    project_id: str | None,
+    query: str,
+    summary: str,
+    source_type: str,
+) -> str:
+
+    result_ref = db.collection("research_results").document()
+
+    result_ref.set({
+        "event_id": event_id,
+        "project_id": project_id,
+        "query": query,
+        "summary": summary,
+        "source_type": source_type,
+        "status": "COMPLETED",
+        "created_at": firestore.SERVER_TIMESTAMP,
+    })
+
+    return result_ref.id
+
 def get_task(task_id: str) -> dict | None:
     doc = db.collection("tasks").document(task_id).get()
 
@@ -220,11 +242,23 @@ def save_extraction(extraction: dict) -> str:
     # ---------------------------------------------------------
     if intent == "research":
 
+        project_ref = db.collection("projects").document()
+
+        project_ref.set({
+            "title": extraction.get("project_title"),
+            "summary": extraction.get("summary", ""),
+            "deadline": extraction.get("project_deadline"),
+            "status": "active",
+        })
+
+        project_id = project_ref.id
+
         event = create_event(
             "RESEARCH_REQUESTED",
-            extraction.get("project_title") or "research",
+            project_id,
             {
-                "summary": extraction.get("summary", ""),
+                "project_id": project_id,
+                "query": extraction.get("summary", ""),
                 "project_title": extraction.get("project_title"),
                 "project_deadline": extraction.get("project_deadline"),
             },
@@ -234,7 +268,7 @@ def save_extraction(extraction: dict) -> str:
 
         print("EVENT SAVED:", event)
 
-        return "Research request saved as an event."
+        return f"Created project {project_id} and requested research."
 
     # ---------------------------------------------------------
     # UNKNOWN INTENT

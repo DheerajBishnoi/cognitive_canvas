@@ -94,3 +94,19 @@ export async function toggleTask(taskId, isDone) {
   if (!res.ok) throw new Error(`Failed to update task: ${res.status}`);
   return res.json();
 }
+
+export async function createTask({ title, dueDate, projectId, priority, taskType }) {
+  const res = await fetch('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title,
+      due_date: dueDate,
+      project_id: projectId,
+      priority: priority || 'medium',
+      task_type: taskType || 'task',
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to create task: ${res.status}`);
+  return res.json();
+}

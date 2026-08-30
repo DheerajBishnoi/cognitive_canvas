@@ -1,14 +1,15 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import {
   LayoutDashboard, CalendarDays, ArrowRight, X, Send,
   ChevronLeft, Clock, CheckCircle2, Circle, Sparkles,
   MessageSquare, Loader2, RefreshCw, AlertTriangle, ShieldCheck,
+  Plus, Calendar as CalendarIcon,
 } from 'lucide-react';
 import {
   sendChatMessage,
-  fetchProjects, fetchProjectDetail, fetchSchedule, toggleTask
+  fetchProjects, fetchProjectDetail, fetchSchedule, toggleTask, createTask
 } from './api.js';
 
 function cn(...inputs) { return twMerge(clsx(inputs)); }
@@ -72,7 +73,6 @@ export default function App() {
   const sendToAgent = async (text) => {
     if (!text.trim()) return;
 
-    // Append user message
     setChatMessages((prev) => [...prev, { role: 'user', text }]);
     setIsAgentThinking(true);
     setFallbackNotice(null);
@@ -84,7 +84,6 @@ export default function App() {
     try {
       await sendChatMessage(text, (event) => {
         if (event.type === 'fallback_warning') {
-          // Model quota exhausted! Fallback triggered
           fallbackOccurred = true;
           setIsFallbackActive(true);
           setCurrentModel(event.fallback_model);
@@ -171,6 +170,15 @@ export default function App() {
     }
   };
 
+  const handleCreateTask = async (newTaskData) => {
+    try {
+      await createTask(newTaskData);
+      loadData();
+    } catch (err) {
+      console.error('Failed to create task:', err);
+    }
+  };
+
   const renderContent = () => {
     if (selectedProjectId) {
       return (
@@ -198,6 +206,7 @@ export default function App() {
         tasks={scheduleTasks}
         isLoading={isLoadingData}
         onToggleTask={handleToggleTask}
+        onCreateTask={handleCreateTask}
         onRefresh={loadData}
       />
     );
@@ -635,123 +644,311 @@ function ProjectDetail({ projectId, onBack }) {
   );
 }
 
-// ─── Calendar View ───────────────────────────────────────────────
-function CalendarView({ tasks, isLoading, onToggleTask }) {
-  const [selectedDay, setSelectedDay] = useState(30);
-  const daysInMonth = 31;
-  const startDay = 3;
-  const today = 30;
+// ─── 1-Year Scrollable Calendar & Dynamic Schedule ──────────────
+function CalendarView({ tasks, isLoading, onToggleTask, onCreateTask }) {
+  // Current local date (August 30, 2026)
+  const todayISO = '2026-08-30';
+  const [selectedDate, setSelectedDate] = useState(todayISO);
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [isCreatingTask, setIsCreatingTask] = useState(false);
+  const calendarScrollRef = useRef(null);
+
+  // Generate 12 months (1 full year) starting from current month (Aug 2026 to Jul 2027)
+  const yearMonths = useMemo(() => {
+    const months = [];
+    const baseDate = new Date(2026, 7, 1); // August 2026
+    const startYear = baseDate.getFullYear();
+    const startMonth = baseDate.getMonth();
+
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(startYear, startMonth + i, 1);
+      const year = d.getFullYear();
+      const month = d.getMonth();
+      const monthName = d.toLocaleString('en-US', { month: 'long' });
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      
+      // Monday = 0, Sunday = 6
+      let firstDayIndex = d.getDay() - 1;
+      if (firstDayIndex === -1) firstDayIndex = 6;
+
+      months.push({
+        year,
+        month,
+        monthName,
+        daysInMonth,
+        firstDayIndex,
+        key: `${year}-${month}`,
+      });
+    }
+    return months;
+  }, []);
+
   const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  // Map task counts per day string (YYYY-MM-DD)
+  const tasksByDate = useMemo(() => {
+    const map = {};
+    for (const t of tasks) {
+      if (t.dueDate) {
+        map[t.dueDate] = map[t.dueDate] || { total: 0, done: 0 };
+        map[t.dueDate].total += 1;
+        if (t.done) map[t.dueDate].done += 1;
+      }
+    }
+    // Also attach unassigned active tasks to Today's date
+    const unassignedTasks = tasks.filter((t) => !t.dueDate);
+    if (unassignedTasks.length > 0) {
+      map[todayISO] = map[todayISO] || { total: 0, done: 0 };
+      map[todayISO].total += unassignedTasks.length;
+      map[todayISO].done += unassignedTasks.filter((t) => t.done).length;
+    }
+    return map;
+  }, [tasks, todayISO]);
+
+  // Filter tasks for the selected date
+  const filteredTasks = useMemo(() => {
+    if (selectedDate === todayISO) {
+      // For Today: show tasks explicitly due today + unassigned tasks
+      return tasks.filter((t) => t.dueDate === todayISO || !t.dueDate);
+    } else {
+      // For any other date: show tasks scheduled for this date
+      return tasks.filter((t) => t.dueDate === selectedDate);
+    }
+  }, [tasks, selectedDate, todayISO]);
+
+  // Formatted date label for header
+  const formattedSelectedDate = useMemo(() => {
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    const dateStr = dateObj.toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    return selectedDate === todayISO ? `${dateStr} (Today)` : dateStr;
+  }, [selectedDate, todayISO]);
+
+  const handleQuickAddTask = async (e) => {
+    e.preventDefault();
+    if (!newTaskTitle.trim()) return;
+    setIsCreatingTask(true);
+    try {
+      await onCreateTask({
+        title: newTaskTitle.trim(),
+        dueDate: selectedDate,
+        priority: 'medium',
+        taskType: 'task',
+      });
+      setNewTaskTitle('');
+    } finally {
+      setIsCreatingTask(false);
+    }
+  };
+
+  const jumpToToday = () => {
+    setSelectedDate(todayISO);
+    calendarScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   return (
     <div className="flex flex-col lg:flex-row gap-8">
-      {/* Left Calendar Grid */}
-      <div className="w-full lg:w-2/5">
-        <h1 className="text-2xl font-semibold text-textPrimary mb-1">Calendar</h1>
-        <p className="text-sm text-textSecondary mb-6">August 2026</p>
+      {/* ── Left Column: 1-Year Scrollable Calendar ── */}
+      <div className="w-full lg:w-5/12 flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h1 className="text-2xl font-semibold text-textPrimary">Calendar</h1>
+            <p className="text-xs text-textSecondary mt-0.5">1-Year Horizon (Aug 2026 – Jul 2027)</p>
+          </div>
+          <button
+            onClick={jumpToToday}
+            className="flex items-center gap-1.5 text-xs font-medium bg-accentLight text-accentText px-3 py-1.5 rounded-full hover:bg-blue-100 transition-colors shadow-sm"
+          >
+            <CalendarIcon size={13} />
+            Today
+          </button>
+        </div>
 
-        <div className="bg-surfaceCard rounded-card border border-borderLight p-5 shadow-card">
-          <div className="grid grid-cols-7 mb-3">
-            {dayNames.map((d) => (
-              <div key={d} className="text-center text-xs font-medium text-textTertiary py-2">
-                {d}
+        {/* Scrollable Month List */}
+        <div
+          ref={calendarScrollRef}
+          className="bg-surfaceCard rounded-card border border-borderLight p-4 shadow-card max-h-[640px] overflow-y-auto space-y-6"
+        >
+          {yearMonths.map((m) => (
+            <div key={m.key} className="pb-4 border-b border-borderLight last:border-b-0 last:pb-0">
+              <div className="flex items-center justify-between mb-3 px-1">
+                <h3 className="font-semibold text-sm text-textPrimary">
+                  {m.monthName} <span className="text-textTertiary font-normal">{m.year}</span>
+                </h3>
               </div>
-            ))}
-          </div>
 
-          <div className="grid grid-cols-7 gap-y-1">
-            {Array.from({ length: startDay }).map((_, i) => (
-              <div key={`e-${i}`} />
-            ))}
-            {Array.from({ length: daysInMonth }).map((_, i) => {
-              const day = i + 1;
-              const isSelected = day === selectedDay;
-              const isToday = day === today;
+              {/* Day of Week Headers */}
+              <div className="grid grid-cols-7 mb-2">
+                {dayNames.map((d) => (
+                  <div key={d} className="text-center text-[11px] font-medium text-textTertiary py-1">
+                    {d}
+                  </div>
+                ))}
+              </div>
 
-              return (
-                <button
-                  key={day}
-                  onClick={() => setSelectedDay(day)}
-                  className={cn(
-                    "w-10 h-10 mx-auto rounded-full flex flex-col items-center justify-center text-sm font-medium relative transition-colors",
-                    isSelected
-                      ? "bg-accent text-white"
-                      : isToday
-                      ? "bg-accentLight text-accentText"
-                      : "text-textPrimary hover:bg-gray-100"
-                  )}
-                >
-                  {day}
-                  {isToday && !isSelected && (
-                    <span className="absolute bottom-1 w-1 h-1 rounded-full bg-accent" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
+              {/* Month Days Grid */}
+              <div className="grid grid-cols-7 gap-y-1.5">
+                {/* Empty cells before 1st of month */}
+                {Array.from({ length: m.firstDayIndex }).map((_, i) => (
+                  <div key={`empty-${i}`} />
+                ))}
+
+                {/* Days of Month */}
+                {Array.from({ length: m.daysInMonth }).map((_, i) => {
+                  const dayNum = i + 1;
+                  const dayStr = String(dayNum).padStart(2, '0');
+                  const monthStr = String(m.month + 1).padStart(2, '0');
+                  const dateISO = `${m.year}-${monthStr}-${dayStr}`;
+
+                  const isSelected = dateISO === selectedDate;
+                  const isToday = dateISO === todayISO;
+                  const dayStats = tasksByDate[dateISO];
+                  const hasTasks = dayStats && dayStats.total > 0;
+                  const allDone = hasTasks && dayStats.done === dayStats.total;
+
+                  return (
+                    <button
+                      key={dateISO}
+                      onClick={() => setSelectedDate(dateISO)}
+                      className={cn(
+                        "w-9 h-9 mx-auto rounded-full flex flex-col items-center justify-center text-xs font-medium relative transition-all",
+                        isSelected
+                          ? "bg-accent text-white shadow-sm font-semibold scale-105"
+                          : isToday
+                          ? "bg-accentLight text-accentText font-bold border border-accent"
+                          : "text-textPrimary hover:bg-gray-100"
+                      )}
+                    >
+                      <span>{dayNum}</span>
+
+                      {/* Task Indicator Dot */}
+                      {hasTasks && !isSelected && (
+                        <span
+                          className={cn(
+                            "absolute bottom-1 w-1.5 h-1.5 rounded-full",
+                            allDone ? "bg-emerald-500" : "bg-accent"
+                          )}
+                          title={`${dayStats.done}/${dayStats.total} tasks completed`}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Right Schedule List */}
-      <div className="w-full lg:w-3/5">
-        <div className="flex items-baseline justify-between mb-6">
+      {/* ── Right Column: Filtered Schedule by Selected Date ── */}
+      <div className="w-full lg:w-7/12 flex flex-col">
+        <div className="flex items-baseline justify-between mb-4">
           <div>
-            <h2 className="text-2xl font-semibold text-textPrimary mb-1">Schedule</h2>
-            <p className="text-sm text-textSecondary">
-              {selectedDay === today ? 'Today' : `August ${selectedDay}`} · {tasks.length} active tasks
+            <h2 className="text-2xl font-semibold text-textPrimary">{formattedSelectedDate}</h2>
+            <p className="text-sm text-textSecondary mt-0.5">
+              {filteredTasks.length === 0
+                ? 'No tasks scheduled'
+                : `${filteredTasks.length} ${filteredTasks.length === 1 ? 'task' : 'tasks'} for this date`}
             </p>
           </div>
         </div>
 
-        {isLoading ? (
-          <div className="bg-surfaceCard rounded-card border border-borderLight p-12 text-center shadow-card">
-            <Loader2 size={24} className="animate-spin text-accent mx-auto mb-2" />
-            <p className="text-sm text-textTertiary">Loading schedule from Firestore...</p>
-          </div>
-        ) : tasks.length === 0 ? (
-          <div className="bg-surfaceCard rounded-card border border-borderLight p-8 text-center shadow-card">
-            <CalendarDays size={32} className="text-textTertiary mx-auto mb-3" />
-            <p className="text-sm text-textTertiary">No scheduled tasks found in Firestore.</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {tasks.map((item, i) => (
-              <div
-                key={item.id}
-                onClick={() => onToggleTask(item.id, item.done)}
-                className={cn(
-                  "flex items-center gap-4 bg-surfaceCard rounded-card border border-borderLight px-5 py-4 transition-all hover:shadow-card cursor-pointer select-none",
-                  item.done && "bg-surface opacity-75"
-                )}
-              >
-                <span className="text-sm text-textTertiary font-medium w-6 text-center flex-shrink-0">
-                  {i + 1}.
-                </span>
-                {item.done ? (
-                  <CheckCircle2 size={20} className="text-accent flex-shrink-0" />
-                ) : (
-                  <Circle size={20} className="text-borderLight hover:text-accent flex-shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className={cn(
-                    "text-sm font-medium",
-                    item.done ? "text-textTertiary line-through" : "text-textPrimary"
-                  )}>
-                    {item.text}
-                  </p>
-                  {item.project && (
-                    <p className="text-xs text-textTertiary mt-0.5">{item.project}</p>
+        {/* Schedule List */}
+        <div className="flex-1 flex flex-col">
+          {isLoading ? (
+            <div className="bg-surfaceCard rounded-card border border-borderLight p-12 text-center shadow-card">
+              <Loader2 size={28} className="animate-spin text-accent mx-auto mb-2" />
+              <p className="text-sm text-textTertiary">Loading schedule from Firestore...</p>
+            </div>
+          ) : filteredTasks.length === 0 ? (
+            <div className="bg-surfaceCard rounded-card border border-borderLight p-10 text-center shadow-card mb-4">
+              <CalendarDays size={36} className="text-accent mx-auto mb-3 opacity-60" />
+              <h3 className="text-base font-medium text-textPrimary mb-1">No Tasks for this Date</h3>
+              <p className="text-xs text-textSecondary max-w-sm mx-auto">
+                {selectedDate < todayISO
+                  ? 'No past tasks were recorded for this day.'
+                  : 'Add a new task below or ask the AI agent to schedule learning plans on this date.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3 mb-4">
+              {filteredTasks.map((item, i) => (
+                <div
+                  key={item.id}
+                  onClick={() => onToggleTask(item.id, item.done)}
+                  className={cn(
+                    "flex items-center gap-3.5 bg-surfaceCard rounded-card border border-borderLight px-5 py-4 transition-all hover:shadow-card cursor-pointer select-none",
+                    item.done && "bg-surface opacity-75"
+                  )}
+                >
+                  <span className="text-sm text-textTertiary font-medium w-5 text-center flex-shrink-0">
+                    {i + 1}.
+                  </span>
+                  {item.done ? (
+                    <CheckCircle2 size={20} className="text-accent flex-shrink-0" />
+                  ) : (
+                    <Circle size={20} className="text-borderLight hover:text-accent flex-shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className={cn(
+                      "text-sm font-medium",
+                      item.done ? "text-textTertiary line-through" : "text-textPrimary"
+                    )}>
+                      {item.text}
+                    </p>
+                    {item.project && (
+                      <p className="text-xs text-textTertiary mt-0.5">{item.project}</p>
+                    )}
+                  </div>
+
+                  {item.priority && (
+                    <span className={cn(
+                      "text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full",
+                      item.priority === 'high' ? "bg-red-50 text-red-700 border border-red-200" :
+                      item.priority === 'medium' ? "bg-amber-50 text-amber-700 border border-amber-200" :
+                      "bg-gray-100 text-gray-700 border border-gray-200"
+                    )}>
+                      {item.priority}
+                    </span>
+                  )}
+
+                  {item.estimatedMinutes && (
+                    <span className="text-xs text-textTertiary bg-tagBg px-2 py-0.5 rounded">
+                      {item.estimatedMinutes}m
+                    </span>
                   )}
                 </div>
-                {item.estimatedMinutes && (
-                  <span className="text-xs text-textTertiary bg-tagBg px-2 py-0.5 rounded">
-                    {item.estimatedMinutes}m
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+
+          {/* Quick Add Task directly on selected date */}
+          <form onSubmit={handleQuickAddTask} className="mt-auto pt-2">
+            <div className="flex items-center bg-white border border-borderLight rounded-full shadow-card px-4 py-1 focus-within:border-borderFocus focus-within:shadow-cardHover transition-all">
+              <Plus size={18} className="text-accent mr-2 flex-shrink-0" />
+              <input
+                type="text"
+                value={newTaskTitle}
+                onChange={(e) => setNewTaskTitle(e.target.value)}
+                placeholder={`Add task for ${formattedSelectedDate.split('(')[0].trim()}...`}
+                className="flex-1 py-2.5 text-sm bg-transparent outline-none placeholder:text-textTertiary"
+                disabled={isCreatingTask}
+              />
+              <button
+                type="submit"
+                disabled={!newTaskTitle.trim() || isCreatingTask}
+                className="ml-2 text-xs font-semibold bg-accent text-white px-3.5 py-1.5 rounded-full hover:bg-accentHover transition-colors disabled:opacity-50"
+              >
+                {isCreatingTask ? 'Adding...' : 'Add'}
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   );

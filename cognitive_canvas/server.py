@@ -266,6 +266,34 @@ class TaskUpdate(BaseModel):
     status: Optional[str] = None
 
 
+class CreateTaskRequest(BaseModel):
+    title: str
+    project_id: Optional[str] = None
+    due_date: Optional[str] = None
+    priority: Optional[str] = "medium"
+    task_type: Optional[str] = "task"
+    details: Optional[str] = ""
+    estimated_minutes: Optional[int] = None
+
+
+@api_router.post("/tasks")
+async def create_task_endpoint(body: CreateTaskRequest):
+    """Create and optionally schedule a task in Firestore."""
+    try:
+        from cognitive_canvas.services.firestore_services import create_task
+        task_id = create_task(
+            project_id=body.project_id or "unassigned",
+            title=body.title,
+            task_type=body.task_type or "task",
+            priority=body.priority or "medium",
+            due_date=body.due_date,
+            details=body.details or "",
+        )
+        return {"status": "success", "task_id": task_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @api_router.patch("/tasks/{task_id}")
 async def update_task_status(task_id: str, body: TaskUpdate):
     """Toggle or update a task status in Firestore."""

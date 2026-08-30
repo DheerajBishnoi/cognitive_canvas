@@ -6,6 +6,7 @@ from ..services.firestore_services import (
     list_project_tasks,
     update_task,
     create_task,
+    has_tasks_for_event,
 )
 
 planner_agent = LlmAgent(
@@ -35,8 +36,13 @@ For simple tasks that are already well-defined:
 - Do not unnecessarily modify them.
 - Confirm that they are already properly represented.
 
+Before decomposing a TASK_CREATED event:
+- Check whether tasks already exist for that event using has_tasks_for_event.
+- If tasks already exist for the event, do not create additional subtasks.
+- Treat the existing work as already performed.
 
 When decomposing a complex task:
+- When creating subtasks, pass the TASK_CREATED event's event_id as source_event_id to create_task.
 - Create each actionable step as a separate task using create_task.
 - Do not put subtasks into the parent task's description.
 - Use the parent's project_id.
@@ -51,5 +57,6 @@ Always keep the workspace consistent.
         FunctionTool(list_project_tasks),
         FunctionTool(update_task),
         FunctionTool(create_task),
+        FunctionTool(has_tasks_for_event),
     ],
 )

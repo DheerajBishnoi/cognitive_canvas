@@ -11,6 +11,8 @@ def save_event(event: dict) -> str:
         **event,
         "status": "PENDING",
         "processed": False,
+        "attempt_count": 0,
+        "max_attempts": 3,
     })
 
     return event_id
@@ -73,6 +75,7 @@ def create_task(
     due_date: str | None = None,
     details: str = "",
     create_event_for_task: bool = False,
+    source_event_id: str | None = None,
 ) -> str:
     """
     Create a task in Firestore.
@@ -81,6 +84,17 @@ def create_task(
     This prevents agent-created subtasks from recursively triggering
     the event dispatcher.
     """
+
+    existing = (
+        db.collection("tasks")
+        .where("project_id", "==", project_id)
+        .where("title", "==", title)
+        .limit(1)
+        .stream()
+    )
+
+    if next(existing, None):
+        return "Task already exists."
 
     task_ref = db.collection("tasks").document()
 
@@ -92,6 +106,7 @@ def create_task(
         "due_date": due_date,
         "details": details,
         "status": "queued",
+        "source_event_id": source_event_id,
     })
 
     if create_event_for_task:
@@ -225,3 +240,13 @@ def save_extraction(extraction: dict) -> str:
     # UNKNOWN INTENT
     # ---------------------------------------------------------
     raise ValueError(f"Unsupported extraction intent: {intent}")
+
+def has_tasks_for_event(source_event_id: str) -> bool:
+    docs = (
+        db.collection("tasks")
+        .where("source_event_id", "==", source_event_id)
+        .limit(1)
+        .stream()
+    )
+
+    return next(docs, None) is not None

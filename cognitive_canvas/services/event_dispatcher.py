@@ -1,7 +1,8 @@
 import asyncio
 from pathlib import Path
-
+from google.cloud import firestore
 from dotenv import load_dotenv
+from datetime import datetime, timezone, timedelta
 
 env_path = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(env_path)
@@ -24,21 +25,47 @@ MAX_BACKOFF = 60
 
 
 def get_pending_events(limit: int = 10) -> list[dict]:
-    docs = (
-        db.collection("events")
-        .where("status", "==", "PENDING")
-        .limit(limit)
-        .stream()
-    )
+    events = []
 
-    return [
-        {
+    docs = db.collection("events").stream()
+
+    now = datetime.now(timezone.utc)
+    timeout = timedelta(minutes=5)
+
+    for doc in docs:
+        event = {
             "id": doc.id,
             **doc.to_dict(),
         }
-        for doc in docs
-    ]
 
+        status = event.get("status")
+
+        if status == "PENDING":
+            events.append(event)
+
+        elif status == "PROCESSING":
+            started_at = event.get("processing_started_at")
+
+            if started_at:
+                # Firestore Timestamp → Python datetime
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+
+                if now - started_at > timeout:
+                    print(
+                        f"⚠️ Recovering stale event: {doc.id}"
+                    )
+
+                    db.collection("events").document(doc.id).update({
+                        "status": "PENDING"
+                    })
+
+                    events.append(event)
+
+        if len(events) >= limit:
+            break
+
+    return events
 
 def mark_event_completed(event_id: str):
     db.collection("events").document(event_id).update({
@@ -49,14 +76,33 @@ def mark_event_completed(event_id: str):
 def mark_event_processing(event_id: str):
     db.collection("events").document(event_id).update({
         "status": "PROCESSING",
+        "processing_started_at": firestore.SERVER_TIMESTAMP,
     })
 
 
 def mark_event_failed(event_id: str, error: Exception):
-    db.collection("events").document(event_id).update({
-        "status": "FAILED",
-        "processed": False,
+    event_ref = db.collection("events").document(event_id)
+    event = event_ref.get()
+
+    attempt_count = event.to_dict().get("attempt_count", 0) + 1
+    max_attempts = event.to_dict().get("max_attempts", 3)
+
+    if attempt_count >= max_attempts:
+        status = "DEAD"
+        processed = False
+        print(
+            f"☠️ Event {event_id} reached maximum attempts "
+            f"({max_attempts}). Marking as DEAD."
+        )
+    else:
+        status = "FAILED"
+        processed = False
+
+    event_ref.update({
+        "status": status,
+        "processed": processed,
         "error": str(error),
+        "attempt_count": attempt_count,
     })
 
 def is_rate_limit_error(error: Exception) -> bool:

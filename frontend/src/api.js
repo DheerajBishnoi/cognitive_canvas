@@ -1,13 +1,13 @@
 /**
- * ADK API Service
+ * ADK & Firestore API Service
  *
- * Talks to the ADK web server (proxied via Vite at /api).
- *   POST /apps/{app_name}/users/{user_id}/sessions  → create a session
- *   POST /run_sse                                    → send a message, get SSE stream
+ * Talks to the backend server (proxied via Vite at /api).
  */
 
 const APP_NAME = 'cognitive_canvas';
 const USER_ID = 'web_user';
+
+// ─── ADK Agent Endpoints ────────────────────────────────────────
 
 export async function createSession() {
   const res = await fetch(`/api/apps/${APP_NAME}/users/${USER_ID}/sessions`, {
@@ -71,4 +71,36 @@ export function extractAgentText(events) {
     }
   }
   return textParts.join('\n');
+}
+
+// ─── Firestore Live Data Endpoints ──────────────────────────────
+
+export async function fetchProjects() {
+  const res = await fetch('/api/projects');
+  if (!res.ok) throw new Error(`Failed to fetch projects: ${res.status}`);
+  const data = await res.json();
+  return data.projects || [];
+}
+
+export async function fetchProjectDetail(projectId) {
+  const res = await fetch(`/api/projects/${projectId}`);
+  if (!res.ok) throw new Error(`Failed to fetch project detail: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchSchedule() {
+  const res = await fetch('/api/schedule');
+  if (!res.ok) throw new Error(`Failed to fetch schedule: ${res.status}`);
+  const data = await res.json();
+  return data.schedule || [];
+}
+
+export async function toggleTask(taskId, isDone) {
+  const res = await fetch(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ done: isDone }),
+  });
+  if (!res.ok) throw new Error(`Failed to update task: ${res.status}`);
+  return res.json();
 }

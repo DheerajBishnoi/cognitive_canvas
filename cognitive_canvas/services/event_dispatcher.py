@@ -10,7 +10,7 @@ load_dotenv(env_path)
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
-from .firestore_services import db, save_research_result
+from .firestore_services import claim_event, db, recover_stale_event, save_research_result
 from ..agents.router_agent import router_agent
 from ..agents.research_agent import research_fallback_agent
 
@@ -57,11 +57,9 @@ def get_pending_events(limit: int = 10) -> list[dict]:
                         f"⚠️ Recovering stale event: {doc.id}"
                     )
 
-                    db.collection("events").document(doc.id).update({
-                        "status": "PENDING"
-                    })
-
-                    events.append(event)
+                    if recover_stale_event(doc.id):
+                        event["status"] = "PENDING"
+                        events.append(event)
 
         if len(events) >= limit:
             break
@@ -72,6 +70,7 @@ def mark_event_completed(event_id: str):
     db.collection("events").document(event_id).update({
         "status": "COMPLETED",
         "processed": True,
+        "processing_started_at": firestore.DELETE_FIELD,
     })
 
 def mark_event_processing(event_id: str):
@@ -104,6 +103,7 @@ def mark_event_failed(event_id: str, error: Exception):
         "processed": processed,
         "error": str(error),
         "attempt_count": attempt_count,
+        "processing_started_at": firestore.DELETE_FIELD,
     })
 
 def is_rate_limit_error(error: Exception) -> bool:
@@ -119,8 +119,25 @@ def is_rate_limit_error(error: Exception) -> bool:
         or "RATE LIMIT" in error_text
     )
 
+def is_event_processed(event_id: str) -> bool:
+    doc = db.collection("events").document(event_id).get()
+
+    if not doc.exists:
+        return False
+
+    return doc.to_dict().get("processed", False)
 
 async def process_event(event: dict):
+
+    if is_event_processed(event["id"]):
+        print(f"⏭️ Event already processed: {event['id']}")
+        return
+
+    if not claim_event(event["id"]):
+        print(f"⏭️ Event already claimed or processed: {event['id']}")
+        return
+
+
     runner = InMemoryRunner(
         agent=router_agent,
         app_name=APP_NAME,
@@ -142,7 +159,7 @@ Process this event.
 Route the task to the appropriate specialist agent.
 Do not invent information that is not present in the event.
 """
-    mark_event_processing(event["id"])
+    # mark_event_processing(event["id"])
     print(f"\nProcessing event: {event['id']}")
 
     async for response in runner.run_async(
@@ -160,7 +177,11 @@ Do not invent information that is not present in the event.
     
     # raise Exception("TEST FAILURE")
     mark_event_completed(event["id"])
+
     print(f"\nEvent processed: {event['id']}")
+    
+
+    # print(f"\nProcessing event: {event['id']}")
 
 async def process_research_fallback(event: dict):
     runner = InMemoryRunner(

@@ -4,6 +4,40 @@ from .event_services import create_event
 
 db = firestore.Client(project="negnq-agenticassistant")
 
+def claim_event(event_id: str) -> bool:
+    """
+    Atomically claim an event for processing.
+
+    Returns True if this dispatcher successfully claimed it.
+    Returns False if another dispatcher already claimed/completed it.
+    """
+
+    event_ref = db.collection("events").document(event_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _claim(transaction):
+        snapshot = event_ref.get(transaction=transaction)
+
+        if not snapshot.exists:
+            return False
+
+        event = snapshot.to_dict()
+        status = event.get("status")
+
+        # Only PENDING events can be claimed.
+        if status != "PENDING":
+            return False
+
+        transaction.update(event_ref, {
+            "status": "PROCESSING",
+            "processing_started_at": firestore.SERVER_TIMESTAMP,
+        })
+
+        return True
+
+    return _claim(transaction)
+
 def save_event(event: dict) -> str:
     event_id = event["event_id"]
 
@@ -480,6 +514,38 @@ def save_extraction(extraction: dict) -> str:
     # UNKNOWN INTENT
     # ---------------------------------------------------------
     raise ValueError(f"Unsupported extraction intent: {intent}")
+
+def recover_stale_event(event_id: str) -> bool:
+    """
+    Move a stale PROCESSING event back to PENDING.
+
+    Returns True if recovery was performed.
+    """
+
+    event_ref = db.collection("events").document(event_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _recover(transaction):
+        snapshot = event_ref.get(transaction=transaction)
+
+        if not snapshot.exists:
+            return False
+
+        event = snapshot.to_dict()
+
+        if event.get("status") != "PROCESSING":
+            return False
+
+        transaction.update(event_ref, {
+            "status": "PENDING",
+            "processing_started_at": firestore.DELETE_FIELD,
+            "recovery_count": firestore.Increment(1),
+        })
+
+        return True
+
+    return _recover(transaction)
 
 def has_tasks_for_event(source_event_id: str) -> bool:
     docs = (

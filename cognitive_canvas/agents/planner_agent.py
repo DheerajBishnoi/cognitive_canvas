@@ -12,7 +12,7 @@ from ..services.firestore_services import (
     start_task,
     complete_task,
     get_next_task,
-    schedule_task,
+    schedule_tasks,
 )
 
 planner_agent = LlmAgent(
@@ -94,6 +94,6 @@ Always keep the workspace consistent.
         FunctionTool(start_task),
         FunctionTool(complete_task),
         FunctionTool(get_next_task),
-        FunctionTool(schedule_task),
+        FunctionTool(schedule_tasks),
     ],
 )

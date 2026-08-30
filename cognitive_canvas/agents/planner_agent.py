@@ -7,6 +7,12 @@ from ..services.firestore_services import (
     update_task,
     create_task,
     has_tasks_for_event,
+    get_task_readiness,
+    get_ready_tasks,
+    start_task,
+    complete_task,
+    get_next_task,
+    schedule_task,
 )
 
 planner_agent = LlmAgent(
@@ -54,12 +60,25 @@ Before decomposing a TASK_CREATED event:
 - Treat the existing work as already performed.
 
 When decomposing a complex task:
-- When creating subtasks, pass the TASK_CREATED event's event_id as source_event_id to create_task.
+
 - Create each actionable step as a separate task using create_task.
+- Determine whether any steps logically depend on earlier steps.
+- When a task requires another task to be completed first, pass that
+  prerequisite task's ID in the depends_on parameter.
+- Tasks with no prerequisites should use an empty dependency list.
+- Create tasks in dependency order so prerequisite task IDs are available
+  before creating dependent tasks.
+- When creating subtasks, pass the TASK_CREATED event's event_id as
+  source_event_id to create_task.
 - Do not put subtasks into the parent task's description.
 - Use the parent's project_id.
 - Do not create duplicates.
 - Never claim a task was created unless create_task succeeds.
+- When useful, estimate how long each actionable task should take
+  and pass the estimate in estimated_minutes.
+- Use minutes as the unit.
+- Do not invent false precision. If duration cannot reasonably be estimated,
+  leave estimated_minutes as null.
 
 Always keep the workspace consistent.
 """,
@@ -70,5 +89,11 @@ Always keep the workspace consistent.
         FunctionTool(update_task),
         FunctionTool(create_task),
         FunctionTool(has_tasks_for_event),
+        FunctionTool(get_task_readiness),
+        FunctionTool(get_ready_tasks),
+        FunctionTool(start_task),
+        FunctionTool(complete_task),
+        FunctionTool(get_next_task),
+        FunctionTool(schedule_task),
     ],
 )

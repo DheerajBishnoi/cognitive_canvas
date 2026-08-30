@@ -98,6 +98,8 @@ def create_task(
     details: str = "",
     create_event_for_task: bool = False,
     source_event_id: str | None = None,
+    depends_on: list[str] | None = None,
+    estimated_minutes: int | None = None,
 ) -> str:
     """
     Create a task in Firestore.
@@ -115,8 +117,10 @@ def create_task(
         .stream()
     )
 
-    if next(existing, None):
-        return "Task already exists."
+    existing_task = next(existing, None)
+
+    if existing_task:
+        return existing_task.id
 
     task_ref = db.collection("tasks").document()
 
@@ -129,6 +133,8 @@ def create_task(
         "details": details,
         "status": "queued",
         "source_event_id": source_event_id,
+        "depends_on": depends_on or [],
+        "estimated_minutes": estimated_minutes,
     })
 
     if create_event_for_task:
@@ -145,6 +151,206 @@ def create_task(
         save_event(event)
 
     return task_ref.id
+
+def get_task_readiness(task_id: str) -> dict:
+    task = get_task(task_id)
+
+    if not task:
+        return {
+            "task_id": task_id,
+            "ready": False,
+            "reason": "Task not found",
+        }
+
+    dependencies = task.get("depends_on", [])
+
+    if not dependencies:
+        return {
+            "task_id": task_id,
+            "ready": True,
+            "reason": "No dependencies",
+        }
+
+    dependency_tasks = []
+
+    for dependency_id in dependencies:
+        dependency = get_task(dependency_id)
+
+        if not dependency:
+            return {
+                "task_id": task_id,
+                "ready": False,
+                "reason": f"Dependency {dependency_id} not found",
+            }
+
+        dependency_tasks.append(dependency)
+
+    incomplete = [
+        dependency
+        for dependency in dependency_tasks
+        if dependency.get("status") != "completed"
+    ]
+
+    if incomplete:
+        return {
+            "task_id": task_id,
+            "ready": False,
+            "reason": "Waiting for dependencies",
+            "blocked_by": [
+                dependency["id"]
+                for dependency in incomplete
+            ],
+        }
+
+    return {
+        "task_id": task_id,
+        "ready": True,
+        "reason": "All dependencies completed",
+    }
+
+def get_ready_tasks(project_id: str) -> list[dict]:
+    """
+    Return queued tasks whose dependencies are all completed.
+    """
+
+    docs = (
+        db.collection("tasks")
+        .where("project_id", "==", project_id)
+        .where("status", "==", "queued")
+        .stream()
+    )
+
+    ready_tasks = []
+
+    for doc in docs:
+        task = {
+            "id": doc.id,
+            **doc.to_dict(),
+        }
+
+        readiness = get_task_readiness(task["id"])
+
+        if readiness["ready"]:
+            ready_tasks.append(task)
+
+    return ready_tasks
+
+def complete_task(task_id: str) -> str:
+    task_ref = db.collection("tasks").document(task_id)
+
+    task = task_ref.get()
+
+    if not task.exists:
+        return f"Task {task_id} not found."
+
+    task_ref.update({
+        "status": "completed",
+        "completed_at": firestore.SERVER_TIMESTAMP,
+    })
+
+    return f"Task {task_id} completed successfully."
+
+def start_task(task_id: str) -> str:
+    task_ref = db.collection("tasks").document(task_id)
+
+    task = task_ref.get()
+
+    if not task.exists:
+        return f"Task {task_id} not found."
+
+    task_ref.update({
+        "status": "in-progress",
+        "started_at": firestore.SERVER_TIMESTAMP,
+    })
+
+    return f"Task {task_id} started successfully."
+
+def get_next_task(project_id: str) -> dict | None:
+    ready_tasks = get_ready_tasks(project_id)
+
+    if not ready_tasks:
+        return None
+
+    def sort_key(task):
+        priority_order = {
+            "high": 0,
+            "medium": 1,
+            "low": 2,
+        }
+
+        priority = priority_order.get(
+            task.get("priority", "medium"),
+            1,
+        )
+
+        due_date = task.get("due_date")
+
+        # Tasks with due dates come before tasks without one
+        if due_date:
+            return (priority, 0, due_date)
+
+        return (priority, 1, "")
+
+    ready_tasks.sort(key=sort_key)
+
+    return ready_tasks[0]
+
+def schedule_tasks(project_id: str, available_minutes: int) -> list[dict]:
+    """
+    Build a simple schedule from currently ready tasks.
+
+    Tasks are selected by priority and due date, while respecting
+    the available time budget.
+    """
+
+    if available_minutes <= 0:
+        return []
+
+    ready_tasks = get_ready_tasks(project_id)
+
+    def sort_key(task):
+        priority_order = {
+            "high": 0,
+            "medium": 1,
+            "low": 2,
+        }
+
+        priority = priority_order.get(
+            task.get("priority", "medium"),
+            1,
+        )
+
+        due_date = task.get("due_date")
+
+        if due_date:
+            return (priority, 0, due_date)
+
+        return (priority, 1, "")
+
+    ready_tasks.sort(key=sort_key)
+
+    schedule = []
+    remaining_minutes = available_minutes
+
+    for task in ready_tasks:
+        estimated = task.get("estimated_minutes")
+
+        # We cannot fit a task if we don't know its duration.
+        if not estimated:
+            continue
+
+        if estimated <= remaining_minutes:
+            schedule.append({
+                "task_id": task["id"],
+                "title": task["title"],
+                "estimated_minutes": estimated,
+                "priority": task.get("priority", "medium"),
+                "due_date": task.get("due_date"),
+            })
+
+            remaining_minutes -= estimated
+
+    return schedule
 
 def save_extraction(extraction: dict) -> str:
     """

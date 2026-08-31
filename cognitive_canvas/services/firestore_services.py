@@ -1,492 +1,239 @@
+"""
+Firestore database services for Cognitive Canvas.
+Provides direct, clean, and reliable CRUD operations for projects, tasks, and research.
+"""
+
+from typing import Optional, List, Dict, Any
 from google.cloud import firestore
-from .event_services import create_event
 
-
+# Initialize Firestore Client
 db = firestore.Client(project="negnq-agenticassistant")
 
-def save_event(event: dict) -> str:
-    event_id = event["event_id"]
 
-    db.collection("events").document(event_id).set({
-        **event,
-        "status": "PENDING",
-        "processed": False,
-        "attempt_count": 0,
-        "max_attempts": 3,
-    })
+# ─── Task Services ─────────────────────────────────────────────────────────────
 
-    return event_id
+def create_task(
+    title: str,
+    due_date: Optional[str] = None,
+    priority: str = "medium",
+    task_type: str = "task",
+    details: str = "",
+    project_id: Optional[str] = None,
+    estimated_minutes: Optional[int] = None,
+    depends_on: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Creates a new task in Firestore.
+
+    Args:
+        title: Short, descriptive title of the task.
+        due_date: ISO date formatted string YYYY-MM-DD (e.g. '2026-09-14') or None.
+        priority: 'high', 'medium', or 'low'.
+        task_type: 'task', 'study', 'reading', 'event', 'meeting', 'reminder', etc.
+        details: Additional context, notes, or instructions.
+        project_id: ID of parent project if part of one, else None or 'unassigned'.
+        estimated_minutes: Estimated duration in minutes (e.g. 30, 60, 120).
+        depends_on: Optional list of prerequisite task IDs.
+    """
+    task_ref = db.collection("tasks").document()
+    
+    clean_project_id = project_id if (project_id and project_id != "unassigned") else None
+
+    task_data = {
+        "title": title.strip(),
+        "due_date": due_date.strip() if due_date else None,
+        "priority": priority.lower() if priority in ["high", "medium", "low"] else "medium",
+        "task_type": task_type.lower(),
+        "details": details.strip() if details else "",
+        "project_id": clean_project_id,
+        "status": "queued",
+        "estimated_minutes": estimated_minutes,
+        "depends_on": depends_on or [],
+        "created_at": firestore.SERVER_TIMESTAMP,
+    }
+
+    task_ref.set(task_data)
+    
+    return {
+        "task_id": task_ref.id,
+        "title": task_data["title"],
+        "due_date": task_data["due_date"],
+        "priority": task_data["priority"],
+        "status": "queued",
+        "project_id": clean_project_id,
+    }
+
+
+def get_task(task_id: str) -> Optional[Dict[str, Any]]:
+    """Fetches a single task by ID."""
+    doc = db.collection("tasks").document(task_id).get()
+    if not doc.exists:
+        return None
+    return {"id": doc.id, **doc.to_dict()}
+
+
+def update_task(task_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Updates fields of an existing task.
+    Allowed fields: title, due_date, priority, status, details, estimated_minutes, project_id.
+    """
+    allowed_fields = {
+        "title",
+        "due_date",
+        "priority",
+        "status",
+        "details",
+        "estimated_minutes",
+        "project_id",
+    }
+    
+    safe_updates = {k: v for k, v in updates.items() if k in allowed_fields and v is not None}
+    
+    if "status" in safe_updates and safe_updates["status"] == "completed":
+        safe_updates["completed_at"] = firestore.SERVER_TIMESTAMP
+        
+    task_ref = db.collection("tasks").document(task_id)
+    doc = task_ref.get()
+    if not doc.exists:
+        raise ValueError(f"Task with ID {task_id} not found.")
+
+    if safe_updates:
+        task_ref.update(safe_updates)
+
+    return {"task_id": task_id, "updated_fields": list(safe_updates.keys()), "status": "success"}
+
+
+def delete_task(task_id: str) -> Dict[str, Any]:
+    """Deletes a task by ID."""
+    task_ref = db.collection("tasks").document(task_id)
+    doc = task_ref.get()
+    if not doc.exists:
+        return {"task_id": task_id, "status": "not_found"}
+    task_ref.delete()
+    return {"task_id": task_id, "status": "deleted"}
+
+
+def list_tasks(
+    project_id: Optional[str] = None,
+    due_date: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Queries tasks with optional filters."""
+    query = db.collection("tasks")
+    
+    if project_id:
+        query = query.where("project_id", "==", project_id)
+    if due_date:
+        query = query.where("due_date", "==", due_date)
+    if status:
+        query = query.where("status", "==", status)
+        
+    docs = query.limit(limit).stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+
+def batch_create_tasks(
+    project_id: str,
+    tasks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Creates multiple tasks for a project in batch.
+    Each item in tasks is a dict with title, due_date, priority, details, estimated_minutes, etc.
+    """
+    created = []
+    batch = db.batch()
+    
+    for t in tasks:
+        task_ref = db.collection("tasks").document()
+        task_data = {
+            "project_id": project_id,
+            "title": t.get("title", "Untitled Task").strip(),
+            "due_date": t.get("due_date"),
+            "priority": t.get("priority", "medium").lower(),
+            "task_type": t.get("task_type", "task").lower(),
+            "details": t.get("details", ""),
+            "status": "queued",
+            "estimated_minutes": t.get("estimated_minutes"),
+            "depends_on": t.get("depends_on", []),
+            "created_at": firestore.SERVER_TIMESTAMP,
+        }
+        batch.set(task_ref, task_data)
+        created.append({
+            "task_id": task_ref.id,
+            "title": task_data["title"],
+            "due_date": task_data["due_date"],
+            "priority": task_data["priority"],
+            "estimated_minutes": task_data["estimated_minutes"],
+        })
+        
+    batch.commit()
+    return created
+
+
+# ─── Project Services ──────────────────────────────────────────────────────────
+
+def create_project(
+    title: str,
+    summary: str = "",
+    deadline: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Creates a new project in Firestore."""
+    project_ref = db.collection("projects").document()
+    
+    project_data = {
+        "title": title.strip(),
+        "summary": summary.strip() if summary else "",
+        "deadline": deadline.strip() if deadline else None,
+        "status": "active",
+        "created_at": firestore.SERVER_TIMESTAMP,
+    }
+    
+    project_ref.set(project_data)
+    
+    return {
+        "project_id": project_ref.id,
+        "title": project_data["title"],
+        "summary": project_data["summary"],
+        "deadline": project_data["deadline"],
+        "status": "active",
+    }
+
+
+def get_project(project_id: str) -> Optional[Dict[str, Any]]:
+    """Fetches a single project by ID."""
+    doc = db.collection("projects").document(project_id).get()
+    if not doc.exists:
+        return None
+    return {"id": doc.id, **doc.to_dict()}
+
+
+def list_projects(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Queries all projects."""
+    query = db.collection("projects")
+    if status:
+        query = query.where("status", "==", status)
+    docs = query.stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+
+# ─── Research Services ─────────────────────────────────────────────────────────
 
 def save_research_result(
-    event_id: str,
-    project_id: str | None,
     query: str,
     summary: str,
-    source_type: str,
-) -> str:
-
-    result_ref = db.collection("research_results").document()
-
-    result_ref.set({
-        "event_id": event_id,
-        "project_id": project_id,
+    project_id: Optional[str] = None,
+    source_type: str = "web_search",
+) -> Dict[str, Any]:
+    """Saves a research finding to Firestore."""
+    ref = db.collection("research_results").document()
+    data = {
         "query": query,
         "summary": summary,
+        "project_id": project_id,
         "source_type": source_type,
         "status": "COMPLETED",
         "created_at": firestore.SERVER_TIMESTAMP,
-    })
-
-    return result_ref.id
-
-def get_task(task_id: str) -> dict | None:
-    doc = db.collection("tasks").document(task_id).get()
-
-    if not doc.exists:
-        return None
-
-    return {
-        "id": doc.id,
-        **doc.to_dict(),
     }
-
-
-def list_project_tasks(project_id: str) -> list[dict]:
-    docs = (
-        db.collection("tasks")
-        .where("project_id", "==", project_id)
-        .stream()
-    )
-
-    return [
-        {
-            "id": doc.id,
-            **doc.to_dict(),
-        }
-        for doc in docs
-    ]
-
-
-def update_task(task_id: str, updates: dict) -> str:
-    allowed_fields = {
-        "title",
-        "priority",
-        "due_date",
-        "details",
-        "status",
-    }
-
-    safe_updates = {
-        key: value
-        for key, value in updates.items()
-        if key in allowed_fields
-    }
-
-    if not safe_updates:
-        return "No valid fields to update."
-
-    db.collection("tasks").document(task_id).update(safe_updates)
-
-    return f"Task {task_id} updated successfully."
-
-def create_task(
-    project_id: str,
-    title: str,
-    task_type: str,
-    priority: str = "medium",
-    due_date: str | None = None,
-    details: str = "",
-    create_event_for_task: bool = False,
-    source_event_id: str | None = None,
-    depends_on: list[str] | None = None,
-    estimated_minutes: int | None = None,
-) -> str:
-    """
-    Create a task in Firestore.
-
-    By default, task creation does not emit a TASK_CREATED event.
-    This prevents agent-created subtasks from recursively triggering
-    the event dispatcher.
-    """
-
-    existing = (
-        db.collection("tasks")
-        .where("project_id", "==", project_id)
-        .where("title", "==", title)
-        .limit(1)
-        .stream()
-    )
-
-    existing_task = next(existing, None)
-
-    if existing_task:
-        return existing_task.id
-
-    task_ref = db.collection("tasks").document()
-
-    task_ref.set({
-        "project_id": project_id,
-        "title": title,
-        "task_type": task_type,
-        "priority": priority,
-        "due_date": due_date,
-        "details": details,
-        "status": "queued",
-        "source_event_id": source_event_id,
-        "depends_on": depends_on or [],
-        "estimated_minutes": estimated_minutes,
-    })
-
-    if create_event_for_task:
-        event = create_event(
-            "TASK_CREATED",
-            task_ref.id,
-            {
-                "project_id": project_id,
-                "task_title": title,
-                "task_type": task_type,
-            },
-        )
-
-        save_event(event)
-
-    return task_ref.id
-
-def get_task_readiness(task_id: str) -> dict:
-    task = get_task(task_id)
-
-    if not task:
-        return {
-            "task_id": task_id,
-            "ready": False,
-            "reason": "Task not found",
-        }
-
-    dependencies = task.get("depends_on", [])
-
-    if not dependencies:
-        return {
-            "task_id": task_id,
-            "ready": True,
-            "reason": "No dependencies",
-        }
-
-    dependency_tasks = []
-
-    for dependency_id in dependencies:
-        dependency = get_task(dependency_id)
-
-        if not dependency:
-            return {
-                "task_id": task_id,
-                "ready": False,
-                "reason": f"Dependency {dependency_id} not found",
-            }
-
-        dependency_tasks.append(dependency)
-
-    incomplete = [
-        dependency
-        for dependency in dependency_tasks
-        if dependency.get("status") != "completed"
-    ]
-
-    if incomplete:
-        return {
-            "task_id": task_id,
-            "ready": False,
-            "reason": "Waiting for dependencies",
-            "blocked_by": [
-                dependency["id"]
-                for dependency in incomplete
-            ],
-        }
-
-    return {
-        "task_id": task_id,
-        "ready": True,
-        "reason": "All dependencies completed",
-    }
-
-def get_ready_tasks(project_id: str) -> list[dict]:
-    """
-    Return queued tasks whose dependencies are all completed.
-    """
-
-    docs = (
-        db.collection("tasks")
-        .where("project_id", "==", project_id)
-        .where("status", "==", "queued")
-        .stream()
-    )
-
-    ready_tasks = []
-
-    for doc in docs:
-        task = {
-            "id": doc.id,
-            **doc.to_dict(),
-        }
-
-        readiness = get_task_readiness(task["id"])
-
-        if readiness["ready"]:
-            ready_tasks.append(task)
-
-    return ready_tasks
-
-def complete_task(task_id: str) -> str:
-    task_ref = db.collection("tasks").document(task_id)
-
-    task = task_ref.get()
-
-    if not task.exists:
-        return f"Task {task_id} not found."
-
-    task_ref.update({
-        "status": "completed",
-        "completed_at": firestore.SERVER_TIMESTAMP,
-    })
-
-    return f"Task {task_id} completed successfully."
-
-def start_task(task_id: str) -> str:
-    task_ref = db.collection("tasks").document(task_id)
-
-    task = task_ref.get()
-
-    if not task.exists:
-        return f"Task {task_id} not found."
-
-    task_ref.update({
-        "status": "in-progress",
-        "started_at": firestore.SERVER_TIMESTAMP,
-    })
-
-    return f"Task {task_id} started successfully."
-
-def get_next_task(project_id: str) -> dict | None:
-    ready_tasks = get_ready_tasks(project_id)
-
-    if not ready_tasks:
-        return None
-
-    def sort_key(task):
-        priority_order = {
-            "high": 0,
-            "medium": 1,
-            "low": 2,
-        }
-
-        priority = priority_order.get(
-            task.get("priority", "medium"),
-            1,
-        )
-
-        due_date = task.get("due_date")
-
-        # Tasks with due dates come before tasks without one
-        if due_date:
-            return (priority, 0, due_date)
-
-        return (priority, 1, "")
-
-    ready_tasks.sort(key=sort_key)
-
-    return ready_tasks[0]
-
-def schedule_tasks(project_id: str, available_minutes: int) -> list[dict]:
-    """
-    Build a simple schedule from currently ready tasks.
-
-    Tasks are selected by priority and due date, while respecting
-    the available time budget.
-    """
-
-    if available_minutes <= 0:
-        return []
-
-    ready_tasks = get_ready_tasks(project_id)
-
-    def sort_key(task):
-        priority_order = {
-            "high": 0,
-            "medium": 1,
-            "low": 2,
-        }
-
-        priority = priority_order.get(
-            task.get("priority", "medium"),
-            1,
-        )
-
-        due_date = task.get("due_date")
-
-        if due_date:
-            return (priority, 0, due_date)
-
-        return (priority, 1, "")
-
-    ready_tasks.sort(key=sort_key)
-
-    schedule = []
-    remaining_minutes = available_minutes
-
-    for task in ready_tasks:
-        estimated = task.get("estimated_minutes")
-
-        # We cannot fit a task if we don't know its duration.
-        if not estimated:
-            continue
-
-        if estimated <= remaining_minutes:
-            schedule.append({
-                "task_id": task["id"],
-                "title": task["title"],
-                "estimated_minutes": estimated,
-                "priority": task.get("priority", "medium"),
-                "due_date": task.get("due_date"),
-            })
-
-            remaining_minutes -= estimated
-
-    return schedule
-
-def save_extraction(extraction: dict) -> str:
-    """
-    Persist an extraction according to its intent.
-
-    task     -> create tasks + TASK_CREATED events
-    plan     -> create project + PLAN_REQUESTED event
-    research -> create RESEARCH_REQUESTED event
-    """
-
-    intent = extraction.get("intent", "task")
-
-    # ---------------------------------------------------------
-    # TASK
-    # ---------------------------------------------------------
-    if intent == "task":
-
-        project_ref = db.collection("projects").document()
-
-        project_ref.set({
-            "title": extraction.get("project_title"),
-            "summary": extraction.get("summary", ""),
-            "deadline": extraction.get("project_deadline"),
-            "status": "active",
-        })
-
-        project_id = project_ref.id
-
-        for task in extraction.get("tasks", []):
-            task_ref = db.collection("tasks").document()
-
-            task_ref.set({
-                "project_id": project_id,
-                "title": task["title"],
-                "task_type": task["task_type"],
-                "priority": task["priority"],
-                "due_date": task.get("due_date"),
-                "details": task.get("details", ""),
-                "status": "queued",
-            })
-
-            event = create_event(
-                "TASK_CREATED",
-                task_ref.id,
-                {
-                    "project_id": project_id,
-                    "task_title": task["title"],
-                    "task_type": task["task_type"],
-                },
-            )
-
-            save_event(event)
-
-            print("EVENT SAVED:", event)
-
-        return (
-            f"Saved project {project_id} with "
-            f"{len(extraction.get('tasks', []))} tasks."
-        )
-
-    # ---------------------------------------------------------
-    # PLAN
-    # ---------------------------------------------------------
-    if intent == "plan":
-
-        project_ref = db.collection("projects").document()
-
-        project_ref.set({
-            "title": extraction.get("project_title"),
-            "summary": extraction.get("summary", ""),
-            "deadline": extraction.get("project_deadline"),
-            "status": "active",
-        })
-
-        project_id = project_ref.id
-
-        event = create_event(
-            "PLAN_REQUESTED",
-            project_id,
-            {
-                "project_id": project_id,
-                "goal": extraction.get("summary", ""),
-                "deadline": extraction.get("project_deadline"),
-            },
-        )
-
-        save_event(event)
-
-        print("EVENT SAVED:", event)
-
-        return f"Created project {project_id} and requested a plan."
-
-    # ---------------------------------------------------------
-    # RESEARCH
-    # ---------------------------------------------------------
-    if intent == "research":
-
-        project_ref = db.collection("projects").document()
-
-        project_ref.set({
-            "title": extraction.get("project_title"),
-            "summary": extraction.get("summary", ""),
-            "deadline": extraction.get("project_deadline"),
-            "status": "active",
-        })
-
-        project_id = project_ref.id
-
-        event = create_event(
-            "RESEARCH_REQUESTED",
-            project_id,
-            {
-                "project_id": project_id,
-                "query": extraction.get("summary", ""),
-                "project_title": extraction.get("project_title"),
-                "project_deadline": extraction.get("project_deadline"),
-            },
-        )
-
-        save_event(event)
-
-        print("EVENT SAVED:", event)
-
-        return f"Created project {project_id} and requested research."
-
-    # ---------------------------------------------------------
-    # UNKNOWN INTENT
-    # ---------------------------------------------------------
-    raise ValueError(f"Unsupported extraction intent: {intent}")
-
-def has_tasks_for_event(source_event_id: str) -> bool:
-    docs = (
-        db.collection("tasks")
-        .where("source_event_id", "==", source_event_id)
-        .limit(1)
-        .stream()
-    )
-
-    return next(docs, None) is not None
+    ref.set(data)
+    return {"result_id": ref.id, "query": query, "status": "saved"}

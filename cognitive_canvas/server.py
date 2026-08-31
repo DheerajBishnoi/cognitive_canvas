@@ -3,24 +3,30 @@ import sys
 import json
 import asyncio
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 import uvicorn
 from fastapi import FastAPI, HTTPException, APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # Add project root to sys.path
-project_root = Path(__file__).resolve().parents[1]
+current_file = Path(__file__).resolve()
+cognitive_canvas_dir = current_file.parent
+project_root = cognitive_canvas_dir.parent
+
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+if str(cognitive_canvas_dir) not in sys.path:
+    sys.path.insert(0, str(cognitive_canvas_dir))
 
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.runners import InMemoryRunner
+from google.adk.sessions import InMemorySessionService
 from google.genai import types
-from cognitive_canvas.services.firestore_services import db
-from cognitive_canvas.agent import MODEL_CASCADE, get_extraction_agent
+from cognitive_canvas.services.firestore_services import db, create_task as db_create_task, update_task as db_update_task
+from cognitive_canvas.agent import MODEL_CASCADE, get_agent
 
-agents_dir = str(Path(__file__).resolve().parent)
+agents_dir = str(cognitive_canvas_dir)
 
 # Initialize the ADK FastAPI server with all origins allowed
 app: FastAPI = get_fast_api_app(
@@ -28,6 +34,11 @@ app: FastAPI = get_fast_api_app(
     allow_origins=["*"],
     web=False,
 )
+
+# Persistent Session Service for Multi-Turn Conversations
+session_service = InMemorySessionService()
+user_sessions: Dict[str, str] = {}
+
 
 def is_quota_error(error: Exception) -> bool:
     """Detect 429, Resource Exhausted, and Quota errors."""
@@ -40,9 +51,11 @@ def is_quota_error(error: Exception) -> bool:
         or "RATE_LIMIT" in error_text
     )
 
+
 # ─── API Router (Mounted at both / and /api) ────────────────────
 
 api_router = APIRouter()
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -62,9 +75,22 @@ async def get_model_info():
 @api_router.post("/chat")
 async def chat_with_fallback(req: ChatRequest):
     """
-    Executes the extraction agent with automatic fallback on quota exhaustion.
+    Executes the unified agent with automatic fallback on quota exhaustion.
     Streams SSE events for real-time tokens, fallback notices, and final output.
+    Maintains persistent multi-turn conversational memory per user.
     """
+    user_id = req.user_id or "web_user"
+
+    # Maintain or initialize persistent session
+    session_id = req.session_id or user_sessions.get(user_id)
+    if not session_id:
+        new_sess = await session_service.create_session(
+            app_name="cognitive_canvas",
+            user_id=user_id,
+        )
+        session_id = new_sess.id
+        user_sessions[user_id] = session_id
+
     async def event_generator():
         last_error = None
         
@@ -82,18 +108,18 @@ async def chat_with_fallback(req: ChatRequest):
                     yield f"data: {json.dumps(fallback_warning)}\n\n"
                     print(f"⚠️ [Fallback] Switching from {prev_model} to {model_name} due to quota exhaustion.")
                 
-                # Create extraction agent configured for this model
-                agent = get_extraction_agent(model_name)
-                runner = InMemoryRunner(agent=agent, app_name="cognitive_canvas")
-                session = await runner.session_service.create_session(
+                # Instantiate agent with this model and shared session service
+                agent = get_agent(model_name)
+                runner = InMemoryRunner(
+                    agent=agent,
                     app_name="cognitive_canvas",
-                    user_id=req.user_id or "web_user",
+                    session_service=session_service,
                 )
                 
                 # Stream the agent response
                 async for response in runner.run_async(
-                    user_id=req.user_id or "web_user",
-                    session_id=session.id,
+                    user_id=user_id,
+                    session_id=session_id,
                     new_message=types.Content(
                         role="user",
                         parts=[types.Part(text=req.message)],
@@ -107,6 +133,7 @@ async def chat_with_fallback(req: ChatRequest):
                                     "text": part.text,
                                     "model": model_name,
                                     "is_fallback": idx > 0,
+                                    "session_id": session_id,
                                 }
                                 yield f"data: {json.dumps(chunk)}\n\n"
                 
@@ -115,6 +142,7 @@ async def chat_with_fallback(req: ChatRequest):
                     "type": "done",
                     "model": model_name,
                     "is_fallback": idx > 0,
+                    "session_id": session_id,
                 }
                 yield f"data: {json.dumps(done_event)}\n\n"
                 return
@@ -136,7 +164,7 @@ async def chat_with_fallback(req: ChatRequest):
                     yield f"data: {json.dumps(error_event)}\n\n"
                     return
         
-        # If all models in the cascade failed due to quota
+        # If all models in the cascade failed
         final_error = {
             "type": "error",
             "message": f"All models in fallback cascade exhausted quota. Last error: {last_error}",
@@ -248,8 +276,11 @@ async def get_schedule():
             tasks_list.append({
                 "id": t["id"],
                 "text": t.get("title") or "Untitled Task",
+                "title": t.get("title") or "Untitled Task",
                 "project": p_title,
+                "projectId": t.get("project_id"),
                 "priority": t.get("priority") or "medium",
+                "status": t.get("status") or "queued",
                 "done": t.get("status") in ["completed", "done"],
                 "dueDate": t.get("due_date"),
                 "estimatedMinutes": t.get("estimated_minutes"),
@@ -264,6 +295,9 @@ async def get_schedule():
 class TaskUpdate(BaseModel):
     done: Optional[bool] = None
     status: Optional[str] = None
+    due_date: Optional[str] = None
+    title: Optional[str] = None
+    priority: Optional[str] = None
 
 
 class CreateTaskRequest(BaseModel):
@@ -280,16 +314,16 @@ class CreateTaskRequest(BaseModel):
 async def create_task_endpoint(body: CreateTaskRequest):
     """Create and optionally schedule a task in Firestore."""
     try:
-        from cognitive_canvas.services.firestore_services import create_task
-        task_id = create_task(
-            project_id=body.project_id or "unassigned",
+        res = db_create_task(
             title=body.title,
-            task_type=body.task_type or "task",
-            priority=body.priority or "medium",
             due_date=body.due_date,
+            priority=body.priority or "medium",
+            task_type=body.task_type or "task",
             details=body.details or "",
+            project_id=body.project_id or "unassigned",
+            estimated_minutes=body.estimated_minutes,
         )
-        return {"status": "success", "task_id": task_id}
+        return {"status": "success", "task_id": res["task_id"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -298,23 +332,24 @@ async def create_task_endpoint(body: CreateTaskRequest):
 async def update_task_status(task_id: str, body: TaskUpdate):
     """Toggle or update a task status in Firestore."""
     try:
-        task_ref = db.collection("tasks").document(task_id)
-        task_doc = task_ref.get()
-        if not task_doc.exists:
-            raise HTTPException(status_code=404, detail="Task not found")
-        
         updates = {}
         if body.done is not None:
             updates["status"] = "completed" if body.done else "queued"
         elif body.status:
             updates["status"] = body.status
+        if body.due_date:
+            updates["due_date"] = body.due_date
+        if body.title:
+            updates["title"] = body.title
+        if body.priority:
+            updates["priority"] = body.priority
             
         if updates:
-            task_ref.update(updates)
+            db_update_task(task_id, updates)
             
         return {"status": "success", "task_id": task_id, "updates": updates}
-    except HTTPException:
-        raise
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -325,5 +360,5 @@ app.include_router(api_router, prefix="/api")
 
 
 if __name__ == "__main__":
-    print("🚀 Starting Cognitive Canvas Unified Server with Model Fallback on http://127.0.0.1:8000")
+    print("🚀 Starting Cognitive Canvas Unified Server on http://127.0.0.1:8000")
     uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)

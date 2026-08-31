@@ -40,16 +40,35 @@ session_service = InMemorySessionService()
 user_sessions: Dict[str, str] = {}
 
 
-def is_quota_error(error: Exception) -> bool:
-    """Detect 429, Resource Exhausted, and Quota errors."""
+def is_transient_or_quota_error(error: Exception) -> bool:
+    """Detect 429, 503, 500, Resource Exhausted, Quota, High Demand, and Server Unavailable errors."""
     error_text = str(error).upper()
     return (
         "429" in error_text
+        or "503" in error_text
+        or "500" in error_text
+        or "502" in error_text
+        or "504" in error_text
         or "RESOURCE_EXHAUSTED" in error_text
         or "QUOTA" in error_text
         or "RATE LIMIT" in error_text
         or "RATE_LIMIT" in error_text
+        or "UNAVAILABLE" in error_text
+        or "HIGH DEMAND" in error_text
+        or "OVERLOADED" in error_text
+        or "TEMPORARILY" in error_text
+        or "TEMPORARY" in error_text
     )
+
+
+def extract_clean_error_message(error: Exception) -> str:
+    """Extract a user-friendly error message from API exceptions."""
+    err_str = str(error)
+    if "503" in err_str or "HIGH DEMAND" in err_str.upper() or "UNAVAILABLE" in err_str.upper():
+        return "Model temporarily unavailable due to high demand (503)"
+    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str.upper() or "QUOTA" in err_str.upper():
+        return "API rate / quota limit reached (429)"
+    return err_str.split("\n")[0][:120]
 
 
 # ─── API Router (Mounted at both / and /api) ────────────────────
@@ -92,7 +111,7 @@ async def chat_with_fallback(req: ChatRequest):
         user_sessions[user_id] = session_id
 
     async def event_generator():
-        last_error = None
+        last_error_msg = ""
         
         for idx, model_name in enumerate(MODEL_CASCADE):
             try:
@@ -103,10 +122,11 @@ async def chat_with_fallback(req: ChatRequest):
                         "type": "fallback_warning",
                         "failed_model": prev_model,
                         "fallback_model": model_name,
-                        "message": f"⚠️ {prev_model} quota limit reached. Automatically falling back to {model_name}...",
+                        "reason": last_error_msg,
+                        "message": f"⚠️ {prev_model} issue: {last_error_msg}. Automatically falling back to {model_name}...",
                     }
                     yield f"data: {json.dumps(fallback_warning)}\n\n"
-                    print(f"⚠️ [Fallback] Switching from {prev_model} to {model_name} due to quota exhaustion.")
+                    print(f"⚠️ [Fallback] Switching from {prev_model} to {model_name} due to: {last_error_msg}")
                 
                 # Instantiate agent with this model and shared session service
                 agent = get_agent(model_name)
@@ -148,17 +168,17 @@ async def chat_with_fallback(req: ChatRequest):
                 return
 
             except Exception as e:
-                last_error = e
+                last_error_msg = extract_clean_error_message(e)
                 print(f"❌ Error with model {model_name}: {e}")
                 
-                if is_quota_error(e):
-                    # Quota error: continue to next fallback model
+                if is_transient_or_quota_error(e) and idx < len(MODEL_CASCADE) - 1:
+                    # Transient / Quota error: continue to next fallback model
                     continue
                 else:
-                    # Other error: notify client and exit
+                    # Non-transient error or last model in cascade: notify client
                     error_event = {
                         "type": "error",
-                        "message": str(e),
+                        "message": f"Error with {model_name}: {last_error_msg}",
                         "model": model_name,
                     }
                     yield f"data: {json.dumps(error_event)}\n\n"
@@ -167,7 +187,7 @@ async def chat_with_fallback(req: ChatRequest):
         # If all models in the cascade failed
         final_error = {
             "type": "error",
-            "message": f"All models in fallback cascade exhausted quota. Last error: {last_error}",
+            "message": f"All models in fallback cascade were unavailable. Last issue: {last_error_msg}",
         }
         yield f"data: {json.dumps(final_error)}\n\n"
 

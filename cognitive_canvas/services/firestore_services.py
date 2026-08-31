@@ -1,5 +1,10 @@
 from google.cloud import firestore
 from .event_services import create_event
+import logging
+
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
 db = firestore.Client(project="negnq-agenticassistant")
@@ -7,9 +12,6 @@ db = firestore.Client(project="negnq-agenticassistant")
 def claim_event(event_id: str) -> bool:
     """
     Atomically claim an event for processing.
-
-    Returns True if this dispatcher successfully claimed it.
-    Returns False if another dispatcher already claimed/completed it.
     """
 
     event_ref = db.collection("events").document(event_id)
@@ -17,22 +19,48 @@ def claim_event(event_id: str) -> bool:
 
     @firestore.transactional
     def _claim(transaction):
+
         snapshot = event_ref.get(transaction=transaction)
 
         if not snapshot.exists:
+            logger.warning(
+                "CLAIM: event does not exist: %s",
+                event_id,
+            )
             return False
 
         event = snapshot.to_dict()
-        status = event.get("status")
 
-        # Only PENDING events can be claimed.
+        status = event.get("status")
+        processed = event.get("processed")
+
+        logger.info(
+            "CLAIM CHECK: id=%s status=%s processed=%s",
+            event_id,
+            status,
+            processed,
+        )
+
         if status != "PENDING":
+            logger.info(
+                "CLAIM REJECTED: id=%s status=%s",
+                event_id,
+                status,
+            )
             return False
 
-        transaction.update(event_ref, {
-            "status": "PROCESSING",
-            "processing_started_at": firestore.SERVER_TIMESTAMP,
-        })
+        transaction.update(
+            event_ref,
+            {
+                "status": "PROCESSING",
+                "processing_started_at": firestore.SERVER_TIMESTAMP,
+            },
+        )
+
+        logger.info(
+            "CLAIM SUCCESS: %s",
+            event_id,
+        )
 
         return True
 
@@ -438,7 +466,7 @@ def save_extraction(extraction: dict) -> str:
 
             save_event(event)
 
-            print("EVENT SAVED:", event)
+            logger.info("EVENT SAVED:", event)
 
         return (
             f"Saved project {project_id} with "
@@ -473,7 +501,7 @@ def save_extraction(extraction: dict) -> str:
 
         save_event(event)
 
-        print("EVENT SAVED:", event)
+        logger.info("EVENT SAVED:", event)
 
         return f"Created project {project_id} and requested a plan."
 
@@ -506,7 +534,7 @@ def save_extraction(extraction: dict) -> str:
 
         save_event(event)
 
-        print("EVENT SAVED:", event)
+        logger.info("EVENT SAVED:", event)
 
         return f"Created project {project_id} and requested research."
 

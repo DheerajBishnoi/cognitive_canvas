@@ -3,6 +3,8 @@ from pathlib import Path
 from google.cloud import firestore
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
+import logging
+
 
 env_path = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(env_path)
@@ -14,6 +16,9 @@ from .firestore_services import claim_event, db, recover_stale_event, save_resea
 from ..agents.router_agent import router_agent
 from ..agents.research_agent import research_fallback_agent
 
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 APP_NAME = "cognitive_canvas_router"
 USER_ID = "event_dispatcher"
@@ -53,7 +58,7 @@ def get_pending_events(limit: int = 10) -> list[dict]:
                     started_at = started_at.replace(tzinfo=timezone.utc)
 
                 if now - started_at > timeout:
-                    print(
+                    logger.info(
                         f"⚠️ Recovering stale event: {doc.id}"
                     )
 
@@ -90,7 +95,7 @@ def mark_event_failed(event_id: str, error: Exception):
     if attempt_count >= max_attempts:
         status = "DEAD"
         processed = False
-        print(
+        logger.info(
             f"☠️ Event {event_id} reached maximum attempts "
             f"({max_attempts}). Marking as DEAD."
         )
@@ -130,11 +135,13 @@ def is_event_processed(event_id: str) -> bool:
 async def process_event(event: dict):
 
     if is_event_processed(event["id"]):
-        print(f"⏭️ Event already processed: {event['id']}")
+        logger.info(f"⏭️ Event already processed: {event['id']}")
         return
 
     if not claim_event(event["id"]):
-        print(f"⏭️ Event already claimed or processed: {event['id']}")
+        logger.info(
+            f"⏭️ Event was not claimed: {event['id']}"
+        )
         return
 
 
@@ -160,7 +167,7 @@ Route the task to the appropriate specialist agent.
 Do not invent information that is not present in the event.
 """
     # mark_event_processing(event["id"])
-    print(f"\nProcessing event: {event['id']}")
+    logger.info(f"\nProcessing event: {event['id']}")
 
     async for response in runner.run_async(
         user_id=USER_ID,
@@ -173,12 +180,12 @@ Do not invent information that is not present in the event.
         if response.content and response.content.parts:
             for part in response.content.parts:
                 if part.text:
-                    print(part.text)
+                    logger.info(part.text)
     
     # raise Exception("TEST FAILURE")
     mark_event_completed(event["id"])
 
-    print(f"\nEvent processed: {event['id']}")
+    logger.info(f"\nEvent processed: {event['id']}")
     
 
     # print(f"\nProcessing event: {event['id']}")
@@ -206,7 +213,7 @@ Do not claim to have performed web research.
 Clearly state when current external verification is unavailable.
 """
 
-    print(f"\n⚠️ Running research fallback for event: {event['id']}")
+    logger.info(f"\n⚠️ Running research fallback for event: {event['id']}")
 
     output_parts = []
 
@@ -221,7 +228,7 @@ Clearly state when current external verification is unavailable.
         if response.content and response.content.parts:
             for part in response.content.parts:
                 if part.text:
-                    print(part.text)
+                    logger.info(part.text)
                     output_parts.append(part.text)
 
     findings = "\n".join(output_parts)
@@ -238,19 +245,19 @@ Clearly state when current external verification is unavailable.
 
     mark_event_completed(event["id"])
 
-    print(f"\nFallback completed: {event['id']}")
+    logger.info(f"\nFallback completed: {event['id']}")
 
 async def process_pending_events():
     events = get_pending_events()
 
-    print(f"Found {len(events)} pending events.")
+    logger.info(f"Found {len(events)} pending events.")
 
     for event in events:
         try:
             await process_event(event)
 
         except Exception as e:
-            print(f"Failed to process {event['id']}: {e}")
+            logger.error(f"Failed to process {event['id']}: {e}")
 
             if not is_rate_limit_error(e):
                 mark_event_failed(event["id"], e)
@@ -262,7 +269,7 @@ async def process_pending_events():
                         continue
 
                     except Exception as fallback_error:
-                        print(
+                        logger.error(
                             f"Research fallback also failed: {fallback_error}"
                         )
 
@@ -270,7 +277,7 @@ async def process_pending_events():
 
                         raise RuntimeError("GEMINI_RATE_LIMIT") from fallback_error
 
-                print(
+                logger.error(
                     "⚠️ Gemini quota/rate limit detected. "
                     "Stopping this processing batch."
                 )
@@ -279,7 +286,7 @@ async def process_pending_events():
 
 
 async def run_dispatcher():
-    print("🚀 Event dispatcher started. Watching Firestore...")
+    logger.info("🚀 Event dispatcher started. Watching Firestore...")
 
     backoff = INITIAL_BACKOFF
 
@@ -292,7 +299,7 @@ async def run_dispatcher():
 
         except RuntimeError as e:
             if str(e) == "GEMINI_RATE_LIMIT":
-                print(
+                logger.info(
                     f"⏳ Waiting {backoff} seconds before retrying..."
                 )
 
@@ -302,10 +309,10 @@ async def run_dispatcher():
                 backoff = min(backoff * 2, MAX_BACKOFF)
 
             else:
-                print(f"Dispatcher error: {e}")
+                logger.error(f"Dispatcher error: {e}")
 
         except Exception as e:
-            print(f"Dispatcher error: {e}")
+            logger.error(f"Dispatcher error: {e}")
 
             # Normal unexpected error
             await asyncio.sleep(5)

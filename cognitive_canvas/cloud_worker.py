@@ -1,37 +1,47 @@
 import asyncio
 import logging
 import uuid
+
 from flask import Flask, request
 from google.events.cloud import firestore
 
 from .services.event_dispatcher import process_event
 
+from pathlib import Path
+from dotenv import load_dotenv
+
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(env_path)
+
 app = Flask(__name__)
 
 logger = logging.getLogger(__name__)
 
-invocation_id = str(uuid.uuid4())
-
-logger.info(
-    "EVENT INVOCATION START: invocation=%s",
-    invocation_id,
-)
 
 @app.post("/")
 def handle_event():
+    invocation_id = str(uuid.uuid4())
+
+    logger.info(
+        "EVENT INVOCATION START: invocation=%s",
+        invocation_id,
+    )
+
     try:
-        # Eventarc sends Firestore events as protobuf.
         content_type = request.headers.get("Content-Type", "")
         logger.info("Content-Type: %s", content_type)
 
+        # Eventarc sends Firestore events as protobuf.
         event_data = firestore.DocumentEventData()
         event_data._pb.ParseFromString(request.data)
 
         document = event_data.value
 
-        logger.info("Received Firestore event: %s", document.name)
+        logger.info(
+            "Received Firestore event: %s",
+            document.name,
+        )
 
-        # Convert Firestore protobuf fields into our normal event format
         event = {
             "id": document.name.split("/")[-1],
         }
@@ -49,17 +59,28 @@ def handle_event():
 
         asyncio.run(process_event(event))
 
+        logger.info(
+            "EVENT INVOCATION SUCCESS: invocation=%s event=%s",
+            invocation_id,
+            event["id"],
+        )
+
         return "Processed", 200
 
     except Exception:
-        logger.exception("Failed to process Firestore event")
+        logger.exception(
+            "EVENT INVOCATION FAILED: invocation=%s",
+            invocation_id,
+        )
+
+        # Non-2xx tells Eventarc the delivery failed,
+        # allowing its retry mechanism to handle it.
         return "Processing failed", 500
 
 
 def decode_firestore_value(value):
-    """Convert a Firestore protobuf Value into a normal Python value."""
+    """Convert Firestore protobuf Value into a normal Python value."""
 
-    # Proto Plus exposes the underlying protobuf message through `_pb`.
     kind = value._pb.WhichOneof("value_type")
 
     if kind == "string_value":
@@ -106,3 +127,6 @@ def decode_firestore_value(value):
 
     return None
 
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=8081, debug=False, use_reloader=False)

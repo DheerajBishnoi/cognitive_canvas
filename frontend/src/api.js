@@ -110,3 +110,29 @@ export async function createTask({ title, dueDate, projectId, priority, taskType
   if (!res.ok) throw new Error(`Failed to create task: ${res.status}`);
   return res.json();
 }
+
+export async function deleteTask(taskId) {
+  const res = await fetch(`/api/tasks/${taskId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`Failed to delete task: ${res.status}`);
+  return res.json();
+}
+
+export async function updateProject(projectId, updates) {
+  const res = await fetch(`/api/projects/${projectId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error(`Failed to update project: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteProject(projectId) {
+  const res = await fetch(`/api/projects/${projectId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`Failed to delete project: ${res.status}`);
+  return res.json();
+}

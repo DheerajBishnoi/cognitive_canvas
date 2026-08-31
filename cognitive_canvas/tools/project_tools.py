@@ -75,6 +75,63 @@ def plan_project_tasks(
         return f"❌ Failed to schedule tasks for project {project_id}: {str(e)}"
 
 
+def update_project(
+    project_id: str,
+    title: Optional[str] = None,
+    summary: Optional[str] = None,
+    deadline: Optional[str] = None,
+    status: Optional[str] = None,
+) -> str:
+    """Updates an existing project's title, summary, deadline, or status.
+
+    Args:
+        project_id: The ID of the project to update.
+        title: Optional new project title.
+        summary: Optional new overview/summary.
+        deadline: Optional new deadline in YYYY-MM-DD format.
+        status: Optional status ('active', 'completed', 'archived').
+
+    Returns:
+        Confirmation of updated project fields.
+    """
+    try:
+        from cognitive_canvas.services.firestore_services import update_project as db_update_project
+        updates = {}
+        if title is not None: updates["title"] = title
+        if summary is not None: updates["summary"] = summary
+        if deadline is not None: updates["deadline"] = deadline
+        if status is not None: updates["status"] = status
+
+        if not updates:
+            return f"No update parameters provided for project {project_id}."
+
+        res = db_update_project(project_id, updates)
+        return f"✅ Project {project_id} updated successfully: {', '.join(res['updated_fields'])}."
+    except Exception as e:
+        return f"❌ Failed to update project {project_id}: {str(e)}"
+
+
+def delete_project(project_id: str) -> str:
+    """Permanently deletes a project container and all of its associated tasks and research notes.
+
+    Use this when the user asks to delete, remove, or clear an entire project.
+
+    Args:
+        project_id: The ID of the project to delete.
+
+    Returns:
+        Confirmation of project and task deletion.
+    """
+    try:
+        from cognitive_canvas.services.firestore_services import delete_project as db_delete_project
+        res = db_delete_project(project_id, cascade_tasks=True)
+        if res["status"] == "not_found":
+            return f"Project with ID {project_id} was not found."
+        return f"✅ Project {project_id} and all its {res.get('deleted_tasks_count', 0)} task(s) have been permanently deleted."
+    except Exception as e:
+        return f"❌ Failed to delete project {project_id}: {str(e)}"
+
+
 def list_projects() -> str:
     """Lists all existing projects and their statuses.
 

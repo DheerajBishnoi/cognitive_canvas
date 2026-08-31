@@ -217,6 +217,62 @@ def list_projects(status: Optional[str] = None) -> List[Dict[str, Any]]:
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
 
+def update_project(project_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Updates fields of an existing project (title, summary, deadline, status)."""
+    allowed_fields = {"title", "summary", "deadline", "status"}
+    safe_updates = {k: v for k, v in updates.items() if k in allowed_fields and v is not None}
+    
+    project_ref = db.collection("projects").document(project_id)
+    doc = project_ref.get()
+    if not doc.exists:
+        raise ValueError(f"Project with ID {project_id} not found.")
+
+    if safe_updates:
+        project_ref.update(safe_updates)
+
+    return {"project_id": project_id, "updated_fields": list(safe_updates.keys()), "status": "success"}
+
+
+def delete_project(project_id: str, cascade_tasks: bool = True) -> Dict[str, Any]:
+    """
+    Deletes a project from Firestore.
+    If cascade_tasks is True, also deletes all associated tasks and research notes.
+    """
+    project_ref = db.collection("projects").document(project_id)
+    doc = project_ref.get()
+    if not doc.exists:
+        return {"project_id": project_id, "status": "not_found"}
+
+    deleted_tasks_count = 0
+    deleted_notes_count = 0
+
+    if cascade_tasks:
+        # Delete associated tasks
+        task_docs = db.collection("tasks").where("project_id", "==", project_id).stream()
+        batch = db.batch()
+        for t_doc in task_docs:
+            batch.delete(t_doc.reference)
+            deleted_tasks_count += 1
+        
+        # Delete associated research notes
+        research_docs = db.collection("research_results").where("project_id", "==", project_id).stream()
+        for r_doc in research_docs:
+            batch.delete(r_doc.reference)
+            deleted_notes_count += 1
+            
+        batch.commit()
+
+    # Delete project document
+    project_ref.delete()
+
+    return {
+        "project_id": project_id,
+        "deleted_tasks_count": deleted_tasks_count,
+        "deleted_notes_count": deleted_notes_count,
+        "status": "deleted",
+    }
+
+
 # ─── Research Services ─────────────────────────────────────────────────────────
 
 def save_research_result(
@@ -237,3 +293,13 @@ def save_research_result(
     }
     ref.set(data)
     return {"result_id": ref.id, "query": query, "status": "saved"}
+
+
+def delete_research_result(result_id: str) -> Dict[str, Any]:
+    """Deletes a research result finding by ID."""
+    ref = db.collection("research_results").document(result_id)
+    doc = ref.get()
+    if not doc.exists:
+        return {"result_id": result_id, "status": "not_found"}
+    ref.delete()
+    return {"result_id": result_id, "status": "deleted"}

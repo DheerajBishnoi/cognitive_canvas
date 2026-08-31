@@ -24,7 +24,7 @@ from google.adk.agents import LlmAgent
 
 from cognitive_canvas.utils.date_resolver import get_prompt_date_header
 from cognitive_canvas.tools.task_tools import create_task, update_task, delete_task, list_tasks
-from cognitive_canvas.tools.project_tools import create_project, plan_project_tasks, list_projects
+from cognitive_canvas.tools.project_tools import create_project, update_project, delete_project, plan_project_tasks, list_projects
 from cognitive_canvas.tools.research_tools import search_web, save_research_findings
 
 # Model Cascade Order for Quota Resilience
@@ -41,6 +41,8 @@ CANVAS_TOOLS = [
     delete_task,
     list_tasks,
     create_project,
+    update_project,
+    delete_project,
     plan_project_tasks,
     list_projects,
     search_web,
@@ -98,15 +100,19 @@ You help users manage their daily tasks, organize multi-week learning projects, 
   3. Call `save_research_findings(query=..., summary=..., project_id=...)` so the findings persist in the notes dashboard.
 
 ### 4. ✏️ TASK & PROJECT MANAGEMENT
-- **User intent**: Modifying, completing, rescheduling, deleting, or listing existing items.
+- **User intent**: Modifying, completing, rescheduling, deleting, or listing existing items (projects or tasks).
 - **Examples**:
   - *"Mark the Linux chapter 1 task as completed"*
   - *"Move my dentist appointment from Tuesday to Thursday"*
   - *"Delete the mock test task"*
+  - *"Delete the Quantum Computing project and all its tasks"*
+  - *"Rename project 'OS Exam Prep' to 'Final OS Prep'"*
   - *"What do I have scheduled for today?"*
 - **ACTION**:
-  - To complete/reschedule: Call `update_task(task_id=..., status='completed', due_date=...)`.
-  - To delete: Call `delete_task(task_id=...)`.
+  - To complete/reschedule a task: Call `update_task(task_id=..., status='completed', due_date=...)`.
+  - To delete a task: Call `delete_task(task_id=...)`.
+  - To delete a project and all its tasks: Call `delete_project(project_id=...)`.
+  - To update a project: Call `update_project(project_id=..., title=..., deadline=...)`.
   - To check schedule: Call `list_tasks(due_date=...)` or `list_projects()`.
 
 ### 5. 💬 GENERAL CONVERSATION & QUESTIONS

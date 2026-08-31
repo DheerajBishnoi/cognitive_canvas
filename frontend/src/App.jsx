@@ -5,11 +5,12 @@ import {
   LayoutDashboard, CalendarDays, ArrowRight, X, Send,
   ChevronLeft, Clock, CheckCircle2, Circle, Sparkles,
   MessageSquare, Loader2, RefreshCw, AlertTriangle, ShieldCheck,
-  Plus, Calendar as CalendarIcon,
+  Plus, Calendar as CalendarIcon, Trash2, Edit3,
 } from 'lucide-react';
 import {
   sendChatMessage,
-  fetchProjects, fetchProjectDetail, fetchSchedule, toggleTask, createTask
+  fetchProjects, fetchProjectDetail, fetchSchedule, toggleTask, createTask,
+  deleteProject, updateProject, deleteTask,
 } from './api.js';
 
 function cn(...inputs) { return twMerge(clsx(inputs)); }
@@ -180,6 +181,29 @@ export default function App() {
     }
   };
 
+  const handleDeleteTask = async (taskId) => {
+    try {
+      await deleteTask(taskId);
+      setScheduleTasks((prev) => prev.filter((t) => t.id !== taskId));
+      loadData();
+    } catch (err) {
+      console.error('Failed to delete task:', err);
+    }
+  };
+
+  const handleDeleteProject = async (projectId) => {
+    try {
+      await deleteProject(projectId);
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+      if (selectedProjectId === projectId) {
+        setSelectedProjectId(null);
+      }
+      loadData();
+    } catch (err) {
+      console.error('Failed to delete project:', err);
+    }
+  };
+
   const renderContent = () => {
     if (selectedProjectId) {
       return (
@@ -189,6 +213,8 @@ export default function App() {
             setSelectedProjectId(null);
             loadData();
           }}
+          onDeleteProject={handleDeleteProject}
+          onDeleteTask={handleDeleteTask}
         />
       );
     }
@@ -199,6 +225,7 @@ export default function App() {
           isLoading={isLoadingData}
           onRefresh={loadData}
           onSelectProject={(p) => setSelectedProjectId(p.id)}
+          onDeleteProject={handleDeleteProject}
         />
       );
     }
@@ -208,6 +235,7 @@ export default function App() {
         isLoading={isLoadingData}
         onToggleTask={handleToggleTask}
         onCreateTask={handleCreateTask}
+        onDeleteTask={handleDeleteTask}
         onRefresh={loadData}
       />
     );
@@ -450,7 +478,7 @@ function NavTab({ icon, label, active, onClick }) {
 }
 
 // ─── Dashboard View ──────────────────────────────────────────────
-function Dashboard({ projects, isLoading, onRefresh, onSelectProject }) {
+function Dashboard({ projects, isLoading, onRefresh, onSelectProject, onDeleteProject }) {
   if (isLoading && projects.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-textTertiary">
@@ -482,7 +510,17 @@ function Dashboard({ projects, isLoading, onRefresh, onSelectProject }) {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {projects.map((p) => (
-            <ProjectCard key={p.id} project={p} onClick={() => onSelectProject(p)} />
+            <ProjectCard
+              key={p.id}
+              project={p}
+              onClick={() => onSelectProject(p)}
+              onDelete={(e) => {
+                e.stopPropagation();
+                if (window.confirm(`Delete project "${p.title}" and all its tasks?`)) {
+                  onDeleteProject(p.id);
+                }
+              }}
+            />
           ))}
         </div>
       )}
@@ -490,24 +528,33 @@ function Dashboard({ projects, isLoading, onRefresh, onSelectProject }) {
   );
 }
 
-function ProjectCard({ project, onClick }) {
+function ProjectCard({ project, onClick, onDelete }) {
   const isCompleted = project.status === 'completed' || (project.taskCount > 0 && project.completedCount === project.taskCount);
 
   return (
     <div
       onClick={onClick}
-      className="bg-surfaceCard rounded-card border border-borderLight p-5 cursor-pointer shadow-card hover:shadow-cardHover transition-shadow duration-200 flex flex-col justify-between"
+      className="bg-surfaceCard rounded-card border border-borderLight p-5 cursor-pointer shadow-card hover:shadow-cardHover transition-shadow duration-200 flex flex-col justify-between group"
     >
       <div>
-        <div className="flex items-center gap-2 mb-3">
-          <span className="inline-flex items-center gap-1 bg-tagBg text-tagText text-xs font-medium px-2.5 py-1 rounded-full">
-            📋 Project
-          </span>
-          {isCompleted && (
-            <span className="inline-flex items-center gap-1 bg-successBg text-successText text-xs font-medium px-2.5 py-1 rounded-full">
-              ✓ Completed
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1 bg-tagBg text-tagText text-xs font-medium px-2.5 py-1 rounded-full">
+              📋 Project
             </span>
-          )}
+            {isCompleted && (
+              <span className="inline-flex items-center gap-1 bg-successBg text-successText text-xs font-medium px-2.5 py-1 rounded-full">
+                ✓ Completed
+              </span>
+            )}
+          </div>
+          <button
+            onClick={onDelete}
+            title="Delete Project"
+            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-full text-textTertiary hover:text-red-600 hover:bg-red-50 transition-all"
+          >
+            <Trash2 size={15} />
+          </button>
         </div>
         <h3 className="text-lg font-semibold text-textPrimary mb-1.5 line-clamp-1">{project.title}</h3>
         <p className="text-sm text-textSecondary leading-relaxed mb-4 line-clamp-3">
@@ -534,7 +581,7 @@ function ProjectCard({ project, onClick }) {
 }
 
 // ─── Project Detail View ─────────────────────────────────────────
-function ProjectDetail({ projectId, onBack }) {
+function ProjectDetail({ projectId, onBack, onDeleteProject, onDeleteTask }) {
   const [project, setProject] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -566,6 +613,19 @@ function ProjectDetail({ projectId, onBack }) {
     }
   };
 
+  const handleTaskDelete = async (e, taskId) => {
+    e.stopPropagation();
+    try {
+      await onDeleteTask(taskId);
+      setProject((prev) => ({
+        ...prev,
+        tasks: prev.tasks.filter((t) => t.id !== taskId),
+      }));
+    } catch (err) {
+      console.error('Failed to delete task:', err);
+    }
+  };
+
   if (isLoading || !project) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-textTertiary">
@@ -577,12 +637,25 @@ function ProjectDetail({ projectId, onBack }) {
 
   return (
     <div>
-      <button
-        onClick={onBack}
-        className="flex items-center gap-1.5 text-sm text-textSecondary hover:text-accentText font-medium mb-5 transition-colors"
-      >
-        <ChevronLeft size={16} /> Back to Projects
-      </button>
+      <div className="flex items-center justify-between mb-5">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-sm text-textSecondary hover:text-accentText font-medium transition-colors"
+        >
+          <ChevronLeft size={16} /> Back to Projects
+        </button>
+        <button
+          onClick={() => {
+            if (window.confirm(`Are you sure you want to delete "${project.title}" and all its tasks?`)) {
+              onDeleteProject(project.id);
+            }
+          }}
+          className="flex items-center gap-1.5 text-xs font-medium text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-full transition-colors"
+        >
+          <Trash2 size={13} />
+          Delete Project
+        </button>
+      </div>
 
       <div className="mb-8 flex items-start justify-between">
         <div>
@@ -627,7 +700,7 @@ function ProjectDetail({ projectId, onBack }) {
                   key={task.id}
                   onClick={() => handleTaskToggle(task.id, task.done)}
                   className={cn(
-                    "flex items-center gap-3 bg-surfaceCard rounded-card border border-borderLight px-5 py-3.5 transition-all hover:shadow-card cursor-pointer select-none",
+                    "flex items-center gap-3 bg-surfaceCard rounded-card border border-borderLight px-5 py-3.5 transition-all hover:shadow-card cursor-pointer select-none group",
                     task.done && "bg-surface opacity-75"
                   )}
                 >
@@ -652,6 +725,13 @@ function ProjectDetail({ projectId, onBack }) {
                       {task.estimatedMinutes}m
                     </span>
                   )}
+                  <button
+                    onClick={(e) => handleTaskDelete(e, task.id)}
+                    title="Delete Task"
+                    className="opacity-0 group-hover:opacity-100 p-1.5 rounded-full text-textTertiary hover:text-red-600 hover:bg-red-50 transition-all"
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               ))}
             </div>
@@ -663,7 +743,7 @@ function ProjectDetail({ projectId, onBack }) {
 }
 
 // ─── 1-Year Scrollable Calendar & Dynamic Schedule ──────────────
-function CalendarView({ tasks, isLoading, onToggleTask, onCreateTask }) {
+function CalendarView({ tasks, isLoading, onToggleTask, onCreateTask, onDeleteTask }) {
   // Current local date (August 30, 2026)
   const todayISO = '2026-08-30';
   const [selectedDate, setSelectedDate] = useState(todayISO);
@@ -900,7 +980,7 @@ function CalendarView({ tasks, isLoading, onToggleTask, onCreateTask }) {
                   key={item.id}
                   onClick={() => onToggleTask(item.id, item.done)}
                   className={cn(
-                    "flex items-center gap-3.5 bg-surfaceCard rounded-card border border-borderLight px-5 py-4 transition-all hover:shadow-card cursor-pointer select-none",
+                    "flex items-center gap-3.5 bg-surfaceCard rounded-card border border-borderLight px-5 py-4 transition-all hover:shadow-card cursor-pointer select-none group",
                     item.done && "bg-surface opacity-75"
                   )}
                 >
@@ -940,6 +1020,17 @@ function CalendarView({ tasks, isLoading, onToggleTask, onCreateTask }) {
                       {item.estimatedMinutes}m
                     </span>
                   )}
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteTask(item.id);
+                    }}
+                    title="Delete Task"
+                    className="opacity-0 group-hover:opacity-100 p-1.5 rounded-full text-textTertiary hover:text-red-600 hover:bg-red-50 transition-all"
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               ))}
             </div>

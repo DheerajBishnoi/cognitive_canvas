@@ -374,6 +374,49 @@ async def update_task_status(task_id: str, body: TaskUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@api_router.delete("/tasks/{task_id}")
+async def delete_task_endpoint(task_id: str):
+    """Deletes a task by ID."""
+    try:
+        from cognitive_canvas.services.firestore_services import delete_task as db_delete_task
+        res = db_delete_task(task_id)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ProjectUpdate(BaseModel):
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    deadline: Optional[str] = None
+    status: Optional[str] = None
+
+
+@api_router.patch("/projects/{project_id}")
+async def update_project_endpoint(project_id: str, body: ProjectUpdate):
+    """Updates an existing project."""
+    try:
+        from cognitive_canvas.services.firestore_services import update_project as db_update_project
+        updates = {k: v for k, v in body.dict().items() if v is not None}
+        res = db_update_project(project_id, updates)
+        return res
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.delete("/projects/{project_id}")
+async def delete_project_endpoint(project_id: str):
+    """Deletes a project and all its associated tasks and notes."""
+    try:
+        from cognitive_canvas.services.firestore_services import delete_project as db_delete_project
+        res = db_delete_project(project_id, cascade_tasks=True)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Mount router for both unprefixed (e.g. /chat) and /api (e.g. /api/chat)
 app.include_router(api_router)
 app.include_router(api_router, prefix="/api")

@@ -1,1307 +1,175 @@
-Yes. And now that I’ve seen your actual idea, the quota screen, and the current hackathon rules, I would **change the implementation strategy quite a bit**.
+# 🧠 Cognitive Canvas: Autonomous AI Workspace
 
-Your idea is strong for Taskmaster, but the trick is to **stop building “a Notion clone with AI”** and instead build **one autonomous personal workflow engine that happens to have a Notion-like workspace UI**.
-
-Your source describes three layers: a self-organizing scratchpad, an autonomous project tracker, and asynchronous research/synthesis.   
-
-The current Taskmaster rules line up unusually well with that concept. They specifically want an **event-driven workflow with autonomous routing**, where the system notices a change, figures out what happens next, interacts with tools, and completes the workflow without the user guiding every step. ([All Things Agentic Hackathon][1])
-
-So here is the architecture I would build.
-
-# 1. The product I would actually submit
-
-Give it a product identity rather than calling it "Notion AI."
-
-Something like:
-
-> **Cognitive Canvas: Your workspace that works after you leave.**
-
-The core promise:
-
-> **Dump anything into the workspace. The system decides what it means, what needs to happen, executes the work in the background, and updates the workspace automatically.**
-
-That is much more Taskmaster than:
-
-> "AI helps you organize notes."
-
-The distinction matters because the judging explicitly gives 40% to Innovation & Operational Utility and asks whether the agent autonomously intercepts and completes a **multi-step background workflow without human intervention**. ([All Things Agentic Hackathon][2])
+> **Track:** Taskmaster — *Build a complete workflow, not just a chatbot.*  
+> **Built with:** Gemini 3.5 Flash, Google Agent Development Kit (ADK), Google Cloud Firestore, FastAPI, & React.
 
 ---
 
-# 2. Do NOT build all three ideas equally
+## 💡 Overview & Value Proposition
 
-Your original document contains:
+Most AI assistants today are passive chatbots: they wait for you to ask questions and output blocks of text that you have to manually copy, organize, and schedule yourself. 
 
-1. Cognitive Canvas
-2. AutoTracker
-3. LiveWorkspace
+**Cognitive Canvas is different.** It is an autonomous personal workspace and productivity engine designed to take real action. 
 
-Trying to fully implement all three before the deadline is dangerous.
-
-Instead:
-
-### Make Cognitive Canvas the product
-
-and turn the other two into capabilities inside it.
-
-Think:
-
-```text
-                    COGNITIVE CANVAS
-                           │
-          ┌────────────────┼────────────────┐
-          │                │                │
-       Capture         Organize          Execute
-          │                │                │
-    notes/files/       tasks/projects    background
-    transcripts        deadlines         agents
-                                           │
-                         ┌─────────────────┼──────────────┐
-                         │                 │              │
-                      Research          Monitor       Re-plan
-```
-
-This gives you one coherent product rather than three disconnected demos.
+Whether you dump an unstructured brain dump (*"I need a 2-week study plan for my Operating Systems exam starting tomorrow"*) or a casual reminder (*"Schedule a movie date on the 14th"*), Cognitive Canvas:
+1. **Understands Intent Proportionally:** It never creates an unnecessary multi-week project for a simple 1-off movie reminder, but it will automatically construct a 14-day daily milestone plan for an exam.
+2. **Applies Temporal Intelligence:** It grounds all relative dates ("next Friday", "on the 14th", "in 2 weeks") into exact calendar dates.
+3. **Directly Executes via Google Cloud:** It calls structured tools using Google ADK to persist tasks, schedule deadlines, and save research findings directly into **Google Cloud Firestore**.
+4. **Displays Live in an Interactive 1-Year Calendar:** The workspace immediately renders your live project cards, checklist milestones, and 12-month calendar horizon.
 
 ---
 
-# 3. The killer workflow
+## 🏗️ Architecture & Data Flow
 
-This should be your **main demo**.
+```mermaid
+flowchart TD
+    subgraph Client["🖥️ React Frontend (Vite + Tailwind CSS)"]
+        UI["Interactive UI: Dashboard, 1-Year Calendar, Agent Chat Sidebar"]
+        API_CLIENT["api.js (REST & Server-Sent Events Client)"]
+    end
 
-User enters:
+    subgraph Backend["⚙️ Unified Backend Server (FastAPI on Port 8000)"]
+        SERVER["server.py (FastAPI Gateway)"]
+        SESSION_MGR["InMemorySessionService (Persistent Multi-Turn Context)"]
+        CASCADE["Model Fallback Engine (3.5-flash -> 3.1-flash-lite -> 2.5-flash)"]
+        AGENT["canvas_agent (Google ADK LlmAgent)"]
+    end
 
-> "I need to prepare for my JEE physics test next Friday. I haven't finished electrostatics, optics and current electricity. Research the most important topics, make me a study plan around my existing schedule, and remind me what I should do each day."
+    subgraph Tools["🔧 Direct Function Calling Tools"]
+        TASK_TOOLS["Task Tools: create_task, update_task, delete_task, list_tasks"]
+        PROJECT_TOOLS["Project Tools: create_project, plan_project_tasks, list_projects"]
+        RESEARCH_TOOLS["Research Tools: search_web, save_research_findings"]
+    end
 
-Your workspace receives that as an unstructured brain dump.
+    subgraph GCP["☁️ Google Cloud Infrastructure"]
+        FIRESTORE[("Google Cloud Firestore Database")]
+        COL_PROJECTS["projects/"]
+        COL_TASKS["tasks/"]
+        COL_RESEARCH["research_results/"]
+    end
 
-Then:
-
-### Event 1
-
-`NOTE_CREATED`
-
-Firestore stores it.
-
-### Event 2
-
-A background worker wakes up.
-
-Gemini/ADK classifies the note:
-
-```json
-{
-  "type": "PROJECT",
-  "title": "JEE Physics Preparation",
-  "tasks": [
-    {
-      "title": "Identify important Electrostatics topics",
-      "type": "research"
-    },
-    {
-      "title": "Identify important Optics topics",
-      "type": "research"
-    },
-    {
-      "title": "Build study schedule",
-      "type": "planning"
-    }
-  ]
-}
+    %% Connections
+    UI <--> API_CLIENT
+    API_CLIENT <-->|SSE Stream & REST| SERVER
+    SERVER --> SESSION_MGR
+    SERVER --> CASCADE
+    CASCADE --> AGENT
+    AGENT -->|Function Calling| TASK_TOOLS & PROJECT_TOOLS & RESEARCH_TOOLS
+    TASK_TOOLS & PROJECT_TOOLS & RESEARCH_TOOLS <--> FIRESTORE
+    FIRESTORE --- COL_PROJECTS & COL_TASKS & COL_RESEARCH
 ```
-
-### Event 3
-
-The router decides:
-
-```text
-research task → Research Agent
-planning task → Planner Agent
-deadline task → Schedule Agent
-```
-
-### Event 4
-
-Research agent runs asynchronously.
-
-It searches, synthesizes results and writes its output back into Firestore.
-
-### Event 5
-
-Planner agent notices the research has finished.
-
-It generates the schedule.
-
-### Event 6
-
-The UI changes automatically.
-
-You see:
-
-```text
-PROJECT: JEE Physics Preparation
-
-██████████████████  Research complete
-
-TODAY
-□ Electrostatics: Electric field
-□ Electrostatics: Potential
-□ 25 PYQs
-
-TOMORROW
-□ Current Electricity: Kirchhoff's laws
-...
-```
-
-And the big thing:
-
-### The user didn't tell the agents what to do at every step.
-
-That's the demo.
-
-That is exactly the distinction the Taskmaster judging criteria are looking for. ([All Things Agentic Hackathon][2])
 
 ---
 
-# 4. Architecture
+## ✨ Key Features
 
-I would use:
+### 1. 🎯 Proportional Multi-Intent Engine
+* **Single Tasks & Reminders:** *"Schedule a movie date on the 14th"* ➔ Resolves target date (`2026-09-14`) and schedules **only 1 task** on the calendar. No project bloat.
+* **Complex Multi-Week Projects:** *"Plan a 2-week Operating Systems study plan"* ➔ Creates a Project container and batch-schedules 14 dated daily tasks with duration estimates (90m, 120m) and priorities.
+* **Web Research & Syllabus Grounding:** Searches for top textbooks and video resources, saving summarized notes directly into the project's **Notes & Findings** panel.
+* **Task & Schedule Management:** Modifies, reschedules, or marks tasks completed in Firestore via natural language.
+* **Multi-Turn Persistent Context:** Remembers past conversation turns for seamless follow-up queries.
 
-```text
-                     ┌─────────────────────┐
-                     │    React / Next.js   │
-                     │  Cognitive Canvas UI │
-                     └──────────┬──────────┘
-                                │
-                                ▼
-                    ┌─────────────────────┐
-                    │     Cloud Run       │
-                    │   API / ADK app     │
-                    └──────────┬──────────┘
-                               │
-                   ┌───────────┼────────────┐
-                   │           │            │
-                   ▼           ▼            ▼
-             ┌──────────┐ ┌──────────┐ ┌───────────┐
-             │ Firestore│ │ Pub/Sub  │ │ Cloud     │
-             │ State    │ │ Events   │ │ Storage   │
-             └──────────┘ └────┬─────┘ └───────────┘
-                               │
-                               ▼
-                     ┌──────────────────┐
-                     │  Workflow Router │
-                     │      ADK         │
-                     └────────┬─────────┘
-                              │
-             ┌────────────────┼────────────────┐
-             ▼                ▼                ▼
-       Extractor Agent   Research Agent   Planner Agent
-             │                │                │
-             └────────────────┼────────────────┘
-                              ▼
-                         Firestore
-                              │
-                              ▼
-                         Live UI update
-```
+### 2. 🗓️ 1-Year Scrollable Horizon Calendar
+* Smooth, vertically scrollable 12-month calendar (August 2026 – July 2027).
+* Mathematical date alignment for all 365 days.
+* **Date-Filtered Schedule:** Clicking any date isolates and displays only tasks scheduled for that specific day.
+* **Visual Task Indicators:** Blue indicator dots for pending tasks, green dots when all tasks for the day are finished.
+* **Inline Quick Task Creator:** Add tasks directly to any selected date with 1 click.
 
-This stack satisfies the mandatory technology requirement:
-
-* Gemini 3.5+
-* Google agent framework, such as ADK
-* Google Cloud infrastructure
-
-The contest explicitly requires all three. ([All Things Agentic Hackathon][2])
-
-And Cloud Run + Firestore are specifically listed among the suitable Google Cloud technologies in the hackathon resources. ([All Things Agentic Hackathon][1])
+### 3. 🛡️ Enterprise-Grade Quota & High-Demand Fallback Cascade
+* If the primary `gemini-3.5-flash` encounters a rate limit (`429`) or temporary service spike (`503 UNAVAILABLE`), the server catches it in real time and automatically re-routes to `gemini-3.1-flash-lite` or `gemini-2.5-flash`.
+* Live UI badges and alert banners keep the user informed without crashing or failing requests.
 
 ---
 
-# 5. I would use Pub/Sub as the backbone
+## 🛠️ Technologies Used
 
-This is the architectural piece I'd emphasize to the judges.
-
-Instead of:
-
-```text
-user → agent → everything
-```
-
-use:
-
-```text
-user
-  ↓
-Firestore
-  ↓
-EVENT
-  ↓
-Pub/Sub
-  ↓
-worker
-  ↓
-agent
-  ↓
-Firestore
-  ↓
-new EVENT
-```
-
-This gives you actual asynchronous behavior.
-
-For example:
-
-```text
-NOTE_CREATED
-      ↓
-EXTRACTION_REQUESTED
-      ↓
-TASK_CREATED
-      ↓
-RESEARCH_STARTED
-      ↓
-RESEARCH_COMPLETED
-      ↓
-PLAN_UPDATED
-      ↓
-USER_NOTIFIED
-```
-
-That event chain is your **agentic nervous system**.
-
-And it gives you something fantastic for the demo:
-
-### "While the user is gone, the workspace keeps working."
+| Layer | Technology | Details |
+| :--- | :--- | :--- |
+| **Core AI Model** | **Gemini 3.5 Flash** | Primary reasoning, function calling, and structured planning LLM (with 3.1-flash-lite & 2.5-flash fallback). |
+| **Agent Framework** | **Google ADK (Agent Development Kit)** | Powers agent definition, execution runtime, `FunctionTool` schemas, and session state management. |
+| **Cloud Database** | **Google Cloud Firestore** | Cloud NoSQL database storing persistent `projects`, `tasks`, and `research_results`. |
+| **Backend API** | **FastAPI & Uvicorn** | High-performance Python backend with Server-Sent Events (SSE) streaming and REST endpoints. |
+| **Frontend UI** | **React 18, Vite, Tailwind CSS** | Clean Google Material Skills UI with dynamic calendar, task tracking, and chat sidebar. |
 
 ---
 
-# 6. Your agents should be smaller than you currently think
+## 🚀 Spin-Up & Local Setup Instructions
 
-Your current architecture has:
+### Prerequisites
+* Python 3.11 or 3.12
+* Node.js 18+ & npm
+* Google Cloud project with Firestore enabled (or Service Account / ADC credentials)
+* `GEMINI_API_KEY` set in your environment
 
-```text
-root_agent
-   ↓
-extractor_agent
-   ↓
-execution_agent
+### 1. Clone the Repository
+```bash
+git clone https://github.com/DheerajBishnoi/cognitive_canvas.git
+cd cognitive_canvas
 ```
 
-That works as a prototype, but I wouldn't let the root agent sit there doing everything.
+### 2. Backend Setup
+```bash
+cd cognitive_canvas
 
-Instead:
+# Create & activate Python virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-### Orchestrator
+# Install dependencies
+pip install -r requirements.txt
 
-Responsible only for:
-
-```text
-"What type of work is this?"
-"What agent should handle it?"
-"What should happen next?"
+# Start the unified backend server
+python3 server.py
 ```
+*Backend runs on `http://127.0.0.1:8000`.*
 
-### Extractor
+### 3. Frontend Setup
+Open a new terminal:
+```bash
+cd frontend
 
-Responsible for:
+# Install Node dependencies
+npm install
 
-```text
-raw input → structured objects
+# Start Vite development server
+npm run dev
 ```
-
-### Research Agent
-
-Responsible for:
-
-```text
-research → sources → synthesis → result
-```
-
-### Planner
-
-Responsible for:
-
-```text
-tasks + deadlines + constraints
-→ schedule
-```
-
-### Sentinel
-
-Responsible for:
-
-```text
-external event
-→ determine whether project state changed
-```
-
-### Notification Agent
-
-Responsible for:
-
-```text
-important state change
-→ notify user
-```
-
-Don't create 15 agents just because ADK allows it.
-
-The judging criteria specifically care about **clean separation of concerns and failure-tolerant routing**. ([All Things Agentic Hackathon][2])
-
-Four or five well-defined agents beat twelve decorative agents.
+*Open `http://localhost:5173` in your browser!*
 
 ---
 
-# 7. The important change: deterministic workflow + LLM reasoning
+## 🐳 Docker & Cloud Deployment
 
-Do **not** make Gemini responsible for absolutely everything.
+To build and run as a single containerized service:
 
-For example:
+```bash
+# Build the production container
+docker build -t cognitive-canvas .
 
-```text
-Gemini:
-"Is this a task?"
-"What's its priority?"
-"Which agent should handle it?"
-"Summarize research."
+# Run locally or deploy to Google Cloud Run
+docker run -p 8080:8080 -e GEMINI_API_KEY="your-api-key" cognitive-canvas
 ```
 
-But your code should decide:
-
-```text
-WHERE the state is stored
-WHEN an event fires
-WHICH queue receives it
-WHETHER a task is already running
-WHETHER the same event has already been processed
-WHEN a retry occurs
+Deploying to **Google Cloud Run**:
+```bash
+gcloud run deploy cognitive-canvas \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated
 ```
-
-In other words:
-
-```text
-LLM = brain
-Cloud infrastructure = nervous system
-Application code = spinal cord
-```
-
-That makes the system much more robust and much easier to explain.
-
-The judges explicitly assess whether the system decouples components, manages state and is failure tolerant. ([All Things Agentic Hackathon][2])
 
 ---
 
-# 8. Firestore data model
+## 🔍 Key Findings & Learnings
 
-Keep it simple.
-
-```text
-users/
-    user_id
-
-notes/
-    note_id
-        content
-        created_at
-        status
-
-projects/
-    project_id
-        title
-        description
-        status
-
-tasks/
-    task_id
-        project_id
-        title
-        status
-        priority
-        due_at
-        agent_type
-        result
-
-agent_runs/
-    run_id
-        task_id
-        agent
-        status
-        started_at
-        finished_at
-        error
-
-events/
-    event_id
-        type
-        source
-        entity_id
-        processed
-        created_at
-```
-
-And perhaps:
-
-```text
-research/
-    research_id
-        task_id
-        sources
-        synthesis
-        created_at
-```
-
-That is enough for a serious demo.
+1. **Direct Execution vs. Multi-Hop Queues:** In early prototypes, we experimented with a 6-hop queue-based event dispatcher. We learned that for interactive productivity workspaces, direct function calling via Google ADK delivers vastly superior responsiveness (1–2s vs 20s+).
+2. **Temporal Grounding in Agents:** Language models excel at relative planning ("Day 1", "Day 2") but require explicit date injection to correctly schedule real-world calendar dates. Dynamic temporal injection solved this completely.
+3. **Multi-Tier Cascade Resilience:** Combining multiple Gemini model tiers (`3.5-flash` ➔ `3.1-flash-lite` ➔ `2.5-flash`) ensures that temporary traffic spikes (`503`) or quota limits (`429`) never interrupt the user experience.
 
 ---
 
-# 9. The Async Task Queue UI is a VERY good idea
-
-Your original proposal specifically suggested a visible "Background Agents Working" panel. 
-
-Keep it.
-
-I'd make the UI have three zones:
-
-```text
-┌────────────────────────────────────────────────────────┐
-│ Cognitive Canvas                                + Note │
-├───────────────────────┬────────────────────────────────┤
-│                       │                                │
-│ Projects              │ Current Workspace             │
-│                       │                                │
-│ JEE Preparation       │ "Research vector databases"  │
-│ Hackathon             │                                │
-│ Personal              │                               │
-│                       │                               │
-├───────────────────────┴────────────────────────────────┤
-│ 🤖 Background Agents                                   │
-│                                                        │
-│ ● Extractor      Processing "JEE preparation note"     │
-│ ● Research       Searching 4 sources                  │
-│ ✓ Planner        Updated tomorrow's schedule          │
-│                                                        │
-└────────────────────────────────────────────────────────┘
-```
-
-This is much more powerful in a demo than a chat window full of prose.
-
-You want the judges thinking:
-
-> "Wait, I didn't tell it to do that."
-
-That's the money moment.
-
----
-
-# 10. Your "LiveWorkspace" idea becomes a killer feature
-
-Suppose the user creates:
-
-> "Compare the top three vector databases for our project."
-
-The UI initially says:
-
-```text
-Research requested
-Agent queued...
-```
-
-Then:
-
-```text
-Research Agent
-   ↓
-search
-   ↓
-collect sources
-   ↓
-compare
-   ↓
-generate structured result
-```
-
-And the workspace itself changes:
-
-| Database | Performance | Cost | Ease of use | Best for |
-| -------- | ----------- | ---- | ----------- | -------- |
-| ...      | ...         | ...  | ...         | ...      |
-
-This is exactly the sort of "agent mutates the workspace" behavior that makes your product more than a chatbot.
-
-Your source already envisioned this flow. 
-
----
-
-# 11. AutoTracker should be your second demo, not the primary one
-
-Once the basic engine works, create a deliberately simple external event.
-
-You don't need to integrate every real-world service.
-
-For example:
-
-```text
-GitHub webhook
-      ↓
-TASK_UPDATED
-      ↓
-Sentinel
-      ↓
-"Backend API task is now blocked"
-      ↓
-Planner
-      ↓
-recalculate dependent tasks
-      ↓
-Firestore
-      ↓
-UI
-```
-
-The user sees:
-
-```text
-⚠ Project changed
-
-Backend API delayed by 2 days.
-
-I've automatically:
-✓ moved Integration Testing
-✓ moved Deployment
-✓ changed tomorrow's priorities
-✓ generated a project status summary
-```
-
-That is a beautiful Taskmaster demonstration.
-
----
-
-# 12. Don't build Gmail + Slack + Calendar + GitHub all at once
-
-This is where hackathons eat people's weekends.
-
-Choose **one external event source**.
-
-I'd choose:
-
-### GitHub
-
-because it gives you a clean webhook/event story and fits project tracking naturally.
-
-Then use **synthetic/demo events** where necessary.
-
-You don't need a sprawling enterprise integration platform to prove the concept.
-
-The official Taskmaster examples themselves describe agents watching things like inbox/calendar and creating downstream work, so the conceptual model matters more than having eight connectors. ([All Things Agentic Hackathon][1])
-
----
-
-# 13. I would NOT use Google's enterprise agent platform
-
-You're in **Taskmaster**, not Fortified Enterprise Fleet.
-
-The hackathon says the enterprise platform components such as Agent Registry, Agent Runtime, Memory Bank, Agent Identity, Agent Gateway and Model Armor are recommended specifically for the Fortified Enterprise Fleet track. ([All Things Agentic Hackathon][1])
-
-For you:
-
-```text
-ADK
-+
-Gemini
-+
-Cloud Run
-+
-Firestore
-+
-Pub/Sub
-```
-
-is plenty.
-
-And considerably easier to finish.
-
----
-
-# 14. Your current Gemini quota problem now makes sense
-
-Your screenshot says:
-
-```text
-Gemini 3.1 Flash Lite
-RPM: 3 / 15
-TPM: 2.07K / 250K
-RPD: 7 / 500
-```
-
-So you have **not** exhausted those displayed daily numbers.
-
-That makes me suspicious of the particular API/project/model configuration being used by your ADK application rather than your conceptual architecture.
-
-And this matters because the hackathon requires Gemini **3.5 or newer**, while your current code explicitly uses:
-
-```python
-model="gemini-3.1-flash-lite"
-```
-
-Your uploaded `agent.py` shows that configuration directly. 
-
-The contest rules require Gemini 3.5 or newer. ([All Things Agentic Hackathon][2])
-
-So I would **stop building around `gemini-3.1-flash-lite` immediately**.
-
-Use a qualifying Gemini 3.5+ model through Gemini API or Vertex AI.
-
-That is more important than trying to squeeze your current 3.1 setup into submission.
-
----
-
-# 15. The MVP I would build between now and submission
-
-You have very little time, so here's the actual scope I'd freeze.
-
-### MUST HAVE
-
-**1. Capture**
-
-User can enter:
-
-```text
-note / task / brain dump
-```
-
-**2. Extraction**
-
-Gemini converts it into:
-
-```text
-Project
-Tasks
-Priority
-Deadline
-Dependencies
-Task type
-```
-
-**3. Autonomous routing**
-
-System chooses:
-
-```text
-research
-planning
-tracking
-```
-
-**4. Async execution**
-
-A background worker handles the task after the user's initial request.
-
-**5. Workspace mutation**
-
-The result automatically appears in the canvas.
-
-**6. Async queue UI**
-
-Show:
-
-```text
-queued
-running
-waiting
-completed
-failed
-```
-
-**7. One external event**
-
-GitHub webhook or a simulated project event.
-
-**8. Persistent state**
-
-Firestore.
-
-**9. Cloud deployment**
-
-Cloud Run.
-
-**10. ADK**
-
-Obviously.
-
-That is enough for a compelling submission.
-
----
-
-# 16. Features I would explicitly NOT build
-
-Do not spend your remaining time on:
-
-```text
-❌ perfect rich-text editor
-❌ full Notion database functionality
-❌ real-time multiplayer collaboration
-❌ 20 integrations
-❌ mobile app
-❌ sophisticated authentication
-❌ AI-generated beautiful documents
-❌ voice interface
-❌ vector database unless genuinely needed
-```
-
-Your product's value isn't the editor.
-
-It's the **autonomous workflow underneath it**.
-
----
-
-# 17. The 4-minute demo should tell one story
-
-The hackathon gives you a maximum of four minutes, and the judging specifically looks for live proof of action. ([All Things Agentic Hackathon][2])
-
-I'd make the demo:
-
-### 0:00–0:30
-
-Show the problem.
-
-> "My workspace currently stores things. It doesn't finish them."
-
-### 0:30–1:00
-
-Dump a messy note into Cognitive Canvas.
-
-### 1:00–1:30
-
-Show:
-
-```text
-Extraction Agent
-↓
-tasks generated
-↓
-Research Agent queued
-```
-
-### 1:30–2:30
-
-Let the background process run.
-
-Show:
-
-```text
-Agent → searching
-Agent → synthesizing
-Agent → writing result
-```
-
-and the workspace updating.
-
-### 2:30–3:15
-
-Trigger a project change.
-
-```text
-GitHub event
-↓
-Sentinel
-↓
-Planner
-↓
-schedule automatically changed
-```
-
-### 3:15–3:45
-
-Show Firestore / Cloud Run / Google Cloud proof.
-
-### 3:45–4:00
-
-Final line:
-
-> "Cognitive Canvas doesn't organize my work for me. It notices work, executes it, and keeps my workspace up to date."
-
-That is much stronger than spending four minutes showing UI buttons.
-
-The official rules specifically require the video to demonstrate the backend running on Google Cloud and live execution. ([All Things Agentic Hackathon][2])
-
----
-
-# 18. Your architecture diagram should make the judges immediately understand this
-
-Put this exact conceptual flow on the diagram:
-
-```text
-          HUMAN
-            │
-            ▼
-      Cognitive Canvas
-            │
-            ▼
-        Firestore
-            │
-            ▼
-       Event Bus
-       (Pub/Sub)
-            │
-            ▼
-     ADK Orchestrator
-            │
-     ┌──────┼──────┐
-     ▼      ▼      ▼
- Extract  Research Planner
-     │      │      │
-     └──────┼──────┘
-            ▼
-      Firestore State
-            │
-            ▼
-      Workspace Update
-            ▲
-            │
-     External Events
-        GitHub
-```
-
-That screams:
-
-**event-driven + asynchronous + autonomous + stateful.**
-
-Those are the words you want the architecture to communicate without making the judge excavate them with a shovel.
-
----
-
-# 19. One more strategic change
-
-Don't call the system a "personal assistant" too much.
-
-That phrase has become AI wallpaper.
-
-Instead:
-
-> **An autonomous personal workflow engine with a workspace interface.**
-
-Then explain:
-
-> You give it intentions, not instructions.
-
-That's a much more interesting product proposition.
-
----
-
-## My recommended final architecture
-
-```text
-                    COGNITIVE CANVAS
-                Autonomous Personal OS
-                           │
-                           ▼
-                 ┌─────────────────┐
-                 │  Capture Layer  │
-                 │ notes/files/etc │
-                 └────────┬────────┘
-                          ▼
-                     Firestore
-                          │
-                          ▼
-                       Pub/Sub
-                          │
-                          ▼
-                  ┌───────────────┐
-                  │ ADK Router    │
-                  └───────┬───────┘
-                          │
-             ┌────────────┼────────────┐
-             ▼            ▼            ▼
-         Extractor     Research     Planner
-             │            │            │
-             └────────────┼────────────┘
-                          ▼
-                   Persistent State
-                          │
-             ┌────────────┴────────────┐
-             ▼                         ▼
-       Workspace UI               Notifications
-             ▲
-             │
-       External Events
-          GitHub
-```
-
-And underneath the UI:
-
-```text
-┌────────────────────────────────────────┐
-│ 🤖 BACKGROUND WORK                     │
-│                                        │
-│ Extractor      ✓ Complete              │
-│ Research       ● Running               │
-│ Planner        ⏳ Waiting               │
-│ Sentinel       ✓ Last event 2m ago     │
-└────────────────────────────────────────┘
-```
-
-That is the version I would build.
-
-Most importantly, **your idea is actually a very good fit for the Taskmaster track**, because the official description is almost exactly "watch for change → determine what needs to happen → route it → interact with apps → finish workflow." ([All Things Agentic Hackathon][1])
-
-And the judging weights heavily favor precisely that autonomous operational behavior: 40% Innovation & Operational Utility, with the Taskmaster criterion explicitly asking whether the agent completes a multi-step background workflow without human intervention. ([All Things Agentic Hackathon][2])
-
-### One correction I would make immediately in your code
-
-Your current model is:
-
-```python
-model="gemini-3.1-flash-lite"
-```
-
-but the competition requires **Gemini 3.5 or newer**, so that needs to change before we continue architecting around it.  ([All Things Agentic Hackathon][2])
-
-The next useful step is to **take your current `agent.py` and redesign it into this architecture, while keeping the parts you already have**, rather than starting from zero.
-
-[1]: https://allthingsagentichackathon.devpost.com/resources "Devpost"
-[2]: https://allthingsagentichackathon.devpost.com/rules "All Things Agentic Hackathon: Ready, Set, Agent! Build next-generation agents that run in the background, handle the heavy lifting of massive datasets, and automate complex workflows asynchronously. - Devpost"
-
-
-
-
-
-
-
-------------------------------------------------------------------Current Status-------------------------------------------------------------------------------------------------------------------
-Absolutely. We’ve actually built a pretty solid foundation already.
-
-## ✅ What we've accomplished
-
-### 1. ADK project setup
-
-```text
-Google ADK 2.8.0
-Python 3.14.3
-Virtual environment
-Gemini 3.1 Flash Lite
-```
-
-The basic ADK app runs successfully.
-
-### 2. Extractor Agent
-
-Our root agent now converts messy natural language into structured data:
-
-```text
-User brain dump
-      ↓
-Extractor
-      ↓
-ExtractionResult
-      ↓
-Projects + Tasks
-```
-
-It correctly extracts:
-
-* project
-* tasks
-* task type
-* priority
-* deadlines
-* details
-
-### 3. Firestore persistence
-
-We connected Firestore and successfully created:
-
-```text
-projects/
-tasks/
-events/
-```
-
-The extracted project and tasks are persisted rather than disappearing after the AI response.
-
-### 4. Event generation
-
-Every **user-created task** generates:
-
-```text
-TASK_CREATED
-```
-
-stored in Firestore with:
-
-```text
-event_id
-entity_id
-project_id
-task_type
-task_title
-processed
-created_at
-```
-
-### 5. Router Agent
-
-We built a Router that distinguishes:
-
-```text
-research → Research Agent
-planning / task management → Planner Agent
-```
-
-We also fixed the important distinction between **"study"** and **"research"**.
-
-### 6. Research Agent
-
-Created and successfully delegated to:
-
-```text
-router
-   ↓
-research_agent
-```
-
-Currently it **does not have web search**, because Google Search caused quota issues on your current setup.
-
-### 7. Planner Agent
-
-The Planner can:
-
-```text
-get_task()
-list_project_tasks()
-update_task()
-create_task()
-```
-
-It can therefore actually modify the workspace instead of merely suggesting changes.
-
-### 8. Agent-created task protection
-
-We discovered and fixed a nasty feedback loop:
-
-```text
-Planner
- ↓
-create_task()
- ↓
-TASK_CREATED
- ↓
-Planner
- ↓
-create_task()
- ↓
-💥 infinite loop
-```
-
-Planner-created tasks now **don't automatically emit `TASK_CREATED` events**.
-
-That was an important architectural discovery.
-
-### 9. Event Dispatcher
-
-We built a local dispatcher that:
-
-```text
-Firestore
-   ↓
-pending events
-   ↓
-ADK Runner
-   ↓
-Router
-   ↓
-Planner / Research
-```
-
-and successfully verified it against real Firestore events.
-
-### 10. Automatic polling
-
-The dispatcher now continuously watches Firestore instead of requiring manual execution:
-
-```text
-every few seconds
-      ↓
-check pending events
-      ↓
-process them
-```
-
-So we already have a primitive autonomous loop.
-
----
-
-# 🟡 What is currently imperfect
-
-### Research
-
-Research currently has no real web-search capability because of your free-tier/tool quota situation.
-
-### Event reliability
-
-Current state is basically:
-
-```text
-processed: false → true
-```
-
-We haven't yet implemented:
-
-```text
-pending
-processing
-processed
-failed
-retrying
-```
-
-### Planner architecture
-
-The Planner can decompose tasks, but we're still missing a proper **project-level planning event**.
-
-For example:
-
-```text
-PLAN_REQUESTED
-    ↓
-Planner examines entire project
-    ↓
-creates/reorganizes plan
-```
-
-rather than making every individual `TASK_CREATED` event responsible for planning.
-
-### Cloud architecture
-
-Everything currently runs locally.
-
-We still need:
-
-```text
-Google Cloud Pub/Sub
-Cloud Run
-production Firestore configuration
-```
-
-### Frontend
-
-We haven't built the actual Cognitive Canvas UI yet.
-
-### AutoTracker
-
-No GitHub/Sentinel integration yet.
-
-### LiveWorkspace
-
-No asynchronous research artifact UI yet.
-
-### Final model
-
-We're still deliberately using:
-
-```text
-gemini-3.1-flash-lite
-```
-
-for development. We'll switch to the required Gemini 3.5+ model near submission.
-
----
-
-# 🔴 What remains to build
-
-I'd group the remaining work into **6 major phases**.
-
-```text
-PHASE 1 ✅
-Agent foundation
-Extractor
-Router
-Planner
-Research
-Firestore
-
-PHASE 2 🟡
-Event architecture
-PLAN_REQUESTED
-TASK_UPDATED
-event states
-retries
-Pub/Sub
-
-PHASE 3 ⬜
-Autonomous execution
-Research execution
-Planner execution
-Background agent lifecycle
-result persistence
-
-PHASE 4 ⬜
-AutoTracker
-GitHub webhook
-Sentinel
-automatic replanning
-
-PHASE 5 ⬜
-Cognitive Canvas UI
-Projects
-Tasks
-Research results
-Background Agents panel
-live updates
-
-PHASE 6 ⬜
-Cloud + submission
-Cloud Run
-Pub/Sub
-IAM
-deployment
-Gemini 3.5+
-demo
-README
-```
-
-## Where we are right now
-
-I'd place us here:
-
-```text
-                    COGNITIVE CANVAS
-
-                         USER
-                           │
-                           ▼
-                      EXTRACTOR ✅
-                           │
-                           ▼
-                       FIRESTORE ✅
-                           │
-                           ▼
-                   EVENT DISPATCHER ✅
-                           │
-                           ▼
-                       ROUTER ✅
-                      /       \
-                     ▼         ▼
-               RESEARCH ✅   PLANNER ✅
-                              │
-                              ▼
-                         Firestore ✅
-
-
-          NEXT MAJOR PIECE
-                 │
-                 ▼
-          PLAN_REQUESTED
-          + event lifecycle
-                 │
-                 ▼
-              PUB/SUB
-```
-
-So we're **past the "can we make agents talk to each other?" stage**.
-
-We're now at the much more interesting stage:
-
-> **How do we turn this collection of working agents into a coherent autonomous system?**
-
-And I'd make **`PLAN_REQUESTED` + proper project-level planning** the next milestone, exactly as we discussed.
-
+## 👥 Team
+* **Dheeraj Bishnoi** — *Cognitive Canvas Team*

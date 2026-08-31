@@ -246,5 +246,6 @@ gcloud run deploy cognitive-canvas \
 
 ---
 
-## 👥 Authors
-* **Dheeraj Bishnoi** — *Cognitive Canvas Team*
+## 👥 Team & Authors
+* **Kuldeep Singh Ujjwal**
+* **Dheeraj Bishnoi**

@@ -113,8 +113,8 @@ async def chat_with_fallback(req: ChatRequest):
                 runner = InMemoryRunner(
                     agent=agent,
                     app_name="cognitive_canvas",
-                    session_service=session_service,
                 )
+                runner.session_service = session_service
                 
                 # Stream the agent response
                 async for response in runner.run_async(

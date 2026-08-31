@@ -418,10 +418,30 @@ async def delete_project_endpoint(project_id: str):
 
 
 # Mount router for both unprefixed (e.g. /chat) and /api (e.g. /api/chat)
-app.include_router(api_router)
 app.include_router(api_router, prefix="/api")
+app.include_router(api_router)
+
+# Mount Built React Frontend Static Files if available
+from fastapi.staticfiles import StaticFiles
+
+possible_dist_paths = [
+    project_root / "frontend" / "dist",
+    cognitive_canvas_dir.parent / "frontend" / "dist",
+    Path("/app/frontend/dist"),
+    Path("frontend/dist"),
+]
+
+dist_dir = next((p for p in possible_dist_paths if p.exists() and (p / "index.html").exists()), None)
+
+if dist_dir:
+    print(f"📦 [Single Bundle] Serving React Frontend from: {dist_dir}")
+    app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
+else:
+    print("ℹ️ [Single Bundle] Frontend dist directory not found. Build frontend with 'npm run build' in frontend/ to serve UI bundle.")
 
 
 if __name__ == "__main__":
-    print("🚀 Starting Cognitive Canvas Unified Server on http://127.0.0.1:8000")
-    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    host = os.environ.get("HOST", "0.0.0.0")
+    print(f"🚀 Starting Cognitive Canvas Unified Bundle on http://{host}:{port}")
+    uvicorn.run(app, host=host, port=port)
